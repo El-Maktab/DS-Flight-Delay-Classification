@@ -10,21 +10,12 @@ packages = [{ include = "src" }]
 python = "^3.11"
 pandas = "^2.2"
 numpy = "^1.26"
-scikit-learn = "^1.4"
-xgboost = "^2.0"
-lightgbm = "^4.3"
-imbalanced-learn = "^0.12"
-mlflow = "^2.12"
 requests = "^2.31"
 python-dotenv = "^1.0"
-holidays = "^0.46"
-streamlit = "^1.33"
-category-encoders = "^2.6"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1"
 pytest-cov = "^5.0"
-black = "^24.4"
 ruff = "^0.4"
 ipykernel = "^6.29"
 
