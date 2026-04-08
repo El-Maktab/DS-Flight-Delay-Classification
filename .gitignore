@@ -56,4 +56,4 @@ htmlcov/
 *.log
 logs/
 
-docs/
+ignored-docs/
