@@ -296,21 +296,23 @@ TARGET_LABELS = ["on_time", "minor_delay", "major_delay"]
 
 def check_target(df: pd.DataFrame) -> dict:
     """
-    Assess readiness of ARRIVAL_DELAY as the classification target.
+    Assess readiness of DEPARTURE_DELAY as the classification target.
     Target definition:
-        on_time      : ARRIVAL_DELAY <= 15 min
-        minor_delay  : 15 < ARRIVAL_DELAY <= 45 min
-        major_delay  : ARRIVAL_DELAY > 45 min
+        on_time      : DEPARTURE_DELAY <= 15 min
+        minor_delay  : 15 < DEPARTURE_DELAY <= 45 min
+        major_delay  : DEPARTURE_DELAY > 45 min
         cancelled    : CANCELLED == 1
     """
     total = len(df)
     cancelled_count = int((df["CANCELLED"] == 1).sum())
-    arrival_null = int(df["ARRIVAL_DELAY"].isna().sum())
+    departure_null = int(
+        ((df["CANCELLED"] == 0) & df["DEPARTURE_DELAY"].isna()).sum()
+    )
 
-    # Non-cancelled flights with a valid ARRIVAL_DELAY
-    active = df[(df["CANCELLED"] == 0) & df["ARRIVAL_DELAY"].notna()].copy()
+    # Non-cancelled flights with a valid DEPARTURE_DELAY
+    active = df[(df["CANCELLED"] == 0) & df["DEPARTURE_DELAY"].notna()].copy()
     active["target"] = pd.cut(
-        active["ARRIVAL_DELAY"],
+        active["DEPARTURE_DELAY"],
         bins=TARGET_BINS,
         labels=TARGET_LABELS,
     )
@@ -320,16 +322,12 @@ def check_target(df: pd.DataFrame) -> dict:
 
     class_pct = {k: round(v / total * 100, 2) for k, v in class_counts.items()}
 
-    # Rows that can't be labelled (non-cancelled but missing ARRIVAL_DELAY)
-    unlabellable = int(
-        ((df["CANCELLED"] == 0) & df["ARRIVAL_DELAY"].isna()).sum()
-    )
-
+    unlabellable = departure_null
     passed = unlabellable == 0
     summary = (
         "Target variable is fully labellable."
         if passed
-        else f"{unlabellable} non-cancelled rows have no ARRIVAL_DELAY — cannot be labelled."
+        else f"{unlabellable} non-cancelled rows have no DEPARTURE_DELAY — cannot be labelled."
     )
     log.info("[target] %s", summary)
     return {
@@ -338,11 +336,11 @@ def check_target(df: pd.DataFrame) -> dict:
         "details": {
             "total_rows": total,
             "cancelled_count": cancelled_count,
-            "arrival_delay_nulls": arrival_null,
+            "departure_delay_nulls": departure_null,
             "unlabellable_rows": unlabellable,
             "class_counts": class_counts,
             "class_pct": class_pct,
-            "arrival_delay_stats": df["ARRIVAL_DELAY"].describe().to_dict(),
+            "departure_delay_stats": df["DEPARTURE_DELAY"].describe().to_dict(),
         },
     }
 

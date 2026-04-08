@@ -279,6 +279,8 @@ Note: ~9,837 rows have numeric values in `ORIGIN_AIRPORT` (e.g., `14747`) that a
 
 Outliers were detected using the IQR method across key numeric columns. Extreme values in delay-related columns are expected (heavy weather events, ground stops) and will be handled during the cleaning phase by binning rather than dropping.
 
+![Outlier Box Plots](figures/outlier_boxplots.png)
+
 ---
 
 ### 7.7 Referential Integrity
@@ -339,6 +341,8 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 | `minor_delay` | Minor Delay (15–45 min) | 11,433 | 9.8% |
 | `major_delay` | Major Delay (> 45 min) | 8,833 | 7.6% |
 | `cancelled` | Cancelled | 1,770 | 1.5% |
+
+![Target Variable Readiness](figures/target_readiness.png)
 
 ---
 
