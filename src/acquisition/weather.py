@@ -247,7 +247,7 @@ def build_airport_timezones(
 
 def local_to_eastern(month: int, day: int, local_hour: int, airport_tz: str) -> tuple[int, int, int]:
     """
-    Convert a local departure (month, day, hour) to Eastern time.
+    Convert a local (month, day, hour) to Eastern time.
     Returns (month, day, hour) in America/New_York, accounting for DST.
     """
     dt_local = datetime(YEAR, month, day, local_hour, tzinfo=ZoneInfo(airport_tz))
@@ -255,30 +255,69 @@ def local_to_eastern(month: int, day: int, local_hour: int, airport_tz: str) -> 
     return dt_eastern.month, dt_eastern.day, dt_eastern.hour
 
 
+def arrival_day(departure_day: int, departure_hour: int, scheduled_time_min: float) -> int:
+    """
+    Return the arrival day-of-month, accounting for overnight flights.
+    If scheduled_time_min is NaN we assume same-day arrival.
+    """
+    if pd.isna(scheduled_time_min):
+        return departure_day
+    arrival_minutes = departure_hour * 60 + scheduled_time_min
+    return departure_day + int(arrival_minutes // (24 * 60))
+
+
 def merge_weather(
     flights: pd.DataFrame,
     lookup: dict,
     airport_timezones: dict[str, str],
 ) -> pd.DataFrame:
-    """Join weather features onto flights using (ORIGIN_AIRPORT, MONTH, DAY, departure_hour).
+    """Join origin and destination weather onto flights.
 
-    Cached weather timestamps are in Eastern time, so local departure hours are
-    converted to Eastern before the lookup.
+    Origin  : keyed on (ORIGIN_AIRPORT,      MONTH, DAY,          departure_hour)
+    Destination: keyed on (DESTINATION_AIRPORT, MONTH, arrival_day, scheduled_arrival_hour)
+
+    All hours are converted from local airport time to Eastern before lookup
+    because the cached weather timestamps are in America/New_York.
     """
     flights["departure_hour"] = flights["SCHEDULED_DEPARTURE"] // 100
+    flights["scheduled_arrival_hour"] = flights["SCHEDULED_ARRIVAL"] // 100
 
-    def get_weather(r):
+    def get_origin_weather(r):
         iata = r["ORIGIN_AIRPORT"]
         tz = airport_timezones.get(iata, "America/New_York")
-        e_month, e_day, e_hour = local_to_eastern(int(r["MONTH"]), int(r["DAY"]), int(r["departure_hour"]), tz)
+        e_month, e_day, e_hour = local_to_eastern(
+            int(r["MONTH"]), int(r["DAY"]), int(r["departure_hour"]), tz
+        )
         return lookup.get((iata, e_month, e_day, e_hour), {})
 
-    weather_rows = flights.apply(get_weather, axis=1)
-    weather_df = pd.DataFrame(weather_rows.tolist(), index=flights.index)
-    return pd.concat([flights, weather_df], axis=1)
+    def get_dest_weather(r):
+        iata = r["DESTINATION_AIRPORT"]
+        tz = airport_timezones.get(iata, "America/New_York")
+        arr_day = arrival_day(int(r["DAY"]), int(r["departure_hour"]), r["SCHEDULED_TIME"])
+        try:
+            e_month, e_day, e_hour = local_to_eastern(
+                int(r["MONTH"]), arr_day, int(r["scheduled_arrival_hour"]), tz
+            )
+        except ValueError:
+            e_month, e_day, e_hour = local_to_eastern(
+                int(r["MONTH"]), int(r["DAY"]), int(r["scheduled_arrival_hour"]), tz
+            )
+        return lookup.get((iata, e_month, e_day, e_hour), {})
+
+    log.info("Joining origin weather ...")
+    origin_weather_df = pd.DataFrame(
+        flights.apply(get_origin_weather, axis=1).tolist(), index=flights.index
+    )
+
+    log.info("Joining destination weather ...")
+    dest_weather_df = pd.DataFrame(
+        flights.apply(get_dest_weather, axis=1).tolist(), index=flights.index
+    ).rename(columns=lambda c: f"dest_{c}")
+
+    return pd.concat([flights, origin_weather_df, dest_weather_df], axis=1)
 
 
-def main() -> None:
+def main():
     log.info("Loading flights from %s", FLIGHTS_FILE)
     flights = pd.read_csv(FLIGHTS_FILE, low_memory=False)
     log.info("Loaded %d flights", len(flights))
@@ -287,8 +326,11 @@ def main() -> None:
     coords = load_airport_coords(AIRPORTS_FILE)
     log.info("Loaded coordinates for %d airports", len(coords))
 
-    unique_airports = flights["ORIGIN_AIRPORT"].dropna().unique().tolist()
-    log.info("Unique origin airports to fetch: %d", len(unique_airports))
+    unique_airports = list(
+        set(flights["ORIGIN_AIRPORT"].dropna().tolist())
+        | set(flights["DESTINATION_AIRPORT"].dropna().tolist())
+    )
+    log.info("Unique airports to fetch (origin + destination): %d", len(unique_airports))
 
     lookup = build_weather_lookup(unique_airports, coords)
     log.info("Weather lookup built with %d hourly entries", len(lookup))
@@ -300,20 +342,20 @@ def main() -> None:
     log.info("Merging weather onto flights ...")
     merged = merge_weather(flights, lookup, airport_timezones)
 
-    weather_cols = [
+    origin_weather_cols = [
         "temperature_c", "precipitation_mm", "rain_mm", "snowfall_cm",
         "wind_speed_kmh", "wind_direction_deg", "wind_gusts_kmh",
         "cloud_cover_pct", "weather_code", "relative_humidity_pct", "pressure_msl_hpa",
     ]
-    missing_weather = merged[weather_cols].isna().any(axis=1).sum()
+    dest_weather_cols = [f"dest_{c}" for c in origin_weather_cols]
+
+    missing_origin = merged[origin_weather_cols].isna().any(axis=1).sum()
+    missing_dest = merged[dest_weather_cols].isna().any(axis=1).sum()
 
     log.info("Rows before merge : %d", len(flights))
     log.info("Rows after merge  : %d", len(merged))
-    log.info(
-        "Flights missing weather data: %d (%.2f%%)",
-        missing_weather,
-        100 * missing_weather / len(merged),
-    )
+    log.info("Flights missing origin weather : %d (%.2f%%)", missing_origin, 100 * missing_origin / len(merged))
+    log.info("Flights missing dest weather   : %d (%.2f%%)", missing_dest, 100 * missing_dest / len(merged))
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUTPUT_FILE, index=False)
