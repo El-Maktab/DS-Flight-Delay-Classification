@@ -360,7 +360,7 @@ def summarize(
 
 # Main pipeline
 
-def run_pipeline(df: pd.DataFrame) -> PipelineResult:
+def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series, dict]:
     """
     Run the full preprocessing pipeline on a copy of the input DataFrame.
     The original DataFrame is never mutated.
@@ -409,14 +409,14 @@ def run_pipeline(df: pd.DataFrame) -> PipelineResult:
     log.info("PREPROCESSING PIPELINE — DONE")
     log.info("=" * 60)
 
-    return PipelineResult(
-        X_train=X_train,
-        X_val=X_val,
-        X_test=X_test,
-        y_train=y_train,
-        y_val=y_val,
-        y_test=y_test,
-        summary=summary,
+    return (
+        X_train,
+        X_val,
+        X_test,
+        y_train,
+        y_val,
+        y_test,
+        summary
     )
 
 
@@ -442,22 +442,22 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("PREPROCESSING SUMMARY")
     print("=" * 60)
-    s = result["summary"]
-    print(f"  Before : {s['before']['rows']:>7,} rows × {s['before']['columns']} columns")
-    print(f"  After  : {s['after']['rows']:>7,} rows × {s['after']['columns']} columns")
-    print(f"  Dropped: {s['after']['rows_dropped']:>7,} rows, {s['after']['columns_dropped']} columns")
-    print(f"  Missing cells after: {s['after']['missing_cells']}")
+    summary = result[6]
+    print(f"  Before : {summary['before']['rows']:>7,} rows × {summary['before']['columns']} columns")
+    print(f"  After  : {summary['after']['rows']:>7,} rows × {summary['after']['columns']} columns")
+    print(f"  Dropped: {summary['after']['rows_dropped']:>7,} rows, {summary['after']['columns_dropped']} columns")
+    print(f"  Missing cells after: {summary['after']['missing_cells']}")
     print()
-    print(f"  Train : {s['split']['train_rows']:>7,} rows")
-    print(f"  Val   : {s['split']['val_rows']:>7,} rows")
-    print(f"  Test  : {s['split']['test_rows']:>7,} rows")
+    print(f"  Train : {summary['split']['train_rows']:>7,} rows")
+    print(f"  Val   : {summary['split']['val_rows']:>7,} rows")
+    print(f"  Test  : {summary['split']['test_rows']:>7,} rows")
     print()
     print("  Train class distribution:")
-    for cls, count in sorted(s["split"]["train_class_dist"].items()):
+    for cls, count in sorted(summary["split"]["train_class_dist"].items()):
         print(f"    {cls:<15} {count:>7,}")
     print()
     print("  Post-cleaning validation:")
-    for check, res in s["validation_after_cleaning"].items():
+    for check, res in summary["validation_after_cleaning"].items():
         icon = "✓" if res["passed"] else "✗"
         print(f"    [{icon}] {check:<20}  {res['summary']}")
     print("=" * 60)
