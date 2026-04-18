@@ -1,18 +1,10 @@
 """
-Author: Team 5
+Author: Akram Hany
 Date: 2026-04-18
 
 Description:
     Preprocessing pipeline for the flights_weather dataset.
 
-    Rules:
-        - Never overwrite raw data — always work on a copy of the input DataFrame.
-        - Log every cleaning action (what changed, why, how many records affected).
-        - Re-run validation checks after cleaning to confirm resolution.
-        - Treat cleaning as a pipeline, not a one-off script.
-
-    Public API:
-        run_pipeline(df)  ->  PipelineResult
 """
 
 from __future__ import annotations
@@ -27,14 +19,12 @@ from sklearn.model_selection import train_test_split
 # Import validation checks so we can re-run them after cleaning
 from src.validation.validate import (
     check_completeness,
-    check_consistency,
-    check_outliers,
     check_ranges,
 )
 
 log = logging.getLogger(__name__)
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+# Constants
 
 # Columns to drop because they are post-departure (target leakage) or identifiers
 LEAKAGE_COLUMNS: list[str] = [
@@ -56,10 +46,6 @@ LEAKAGE_COLUMNS: list[str] = [
     "WEATHER_DELAY",        # post-departure delay breakdown — leakage
 ]
 
-# Target bins and labels (from Design.md and phase1_proposal_report.md)
-TARGET_BINS: list[float] = [-float("inf"), 15, 45, float("inf")]
-TARGET_LABELS: list[str] = ["on_time", "minor_delay", "major_delay"]
-
 # Columns where outlier capping is meaningful (numeric, model-relevant)
 OUTLIER_COLS: list[str] = [
     "DISTANCE", "SCHEDULED_TIME",
@@ -72,19 +58,7 @@ OUTLIER_COLS: list[str] = [
 RANDOM_STATE: int = 42
 
 
-# ── Return type ────────────────────────────────────────────────────────────────
-
-class PipelineResult(TypedDict):
-    X_train: pd.DataFrame
-    X_val: pd.DataFrame
-    X_test: pd.DataFrame
-    y_train: pd.Series
-    y_val: pd.Series
-    y_test: pd.Series
-    summary: dict
-
-
-# ── Step 1 — Drop leakage / identifier columns ─────────────────────────────────
+# Step 1 - Drop leakage / identifier columns
 
 def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -101,22 +75,19 @@ def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Step 2 — Drop rows with numeric airport codes ──────────────────────────────
+# Step 2 - Drop rows with numeric airport codes
 
 def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Drop rows where ORIGIN_AIRPORT or DESTINATION_AIRPORT contains a numeric
-    FAA station ID instead of an IATA code. These rows have no weather data
-    (no IATA code → no coordinate lookup → no API match) and imputation would
-    be meaningless for a core feature set.
+    FAA station ID instead of an IATA code.
     """
     before = len(df)
 
     origin_numeric = df["ORIGIN_AIRPORT"].str.isnumeric()
     dest_numeric = df["DESTINATION_AIRPORT"].str.isnumeric()
-    mask = origin_numeric | dest_numeric
 
-    df = df[~mask].copy()
+    df = df[~(origin_numeric | dest_numeric)].copy()
 
     dropped = before - len(df)
     log.info(
@@ -128,7 +99,7 @@ def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Step 3 — Create target variable ───────────────────────────────────────────
+# Step 3 - Create target variable
 
 def create_target(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -138,7 +109,7 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
         major_delay : DEPARTURE_DELAY > 45 min
         cancelled   : CANCELLED == 1
 
-    DEPARTURE_DELAY and CANCELLED are dropped after the target is created.
+    DEPARTURE_DELAY and CANCELLED columns are dropped after the target is created.
     """
     df = df.copy()
 
@@ -148,8 +119,8 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
 
     df.loc[delay_mask, "DELAY_CATEGORY"] = pd.cut(
         df.loc[delay_mask, "DEPARTURE_DELAY"],
-        bins=TARGET_BINS,
-        labels=TARGET_LABELS,
+        bins=[-float("inf"), 15, 45, float("inf")],
+        labels=["on_time", "minor_delay", "major_delay"],
     ).astype(str)
 
     df.loc[cancelled_mask, "DELAY_CATEGORY"] = "cancelled"
@@ -160,24 +131,22 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
         class_counts,
     )
 
-    # Drop source columns — no longer needed and would be leakage
-    df = df.drop(columns=["DEPARTURE_DELAY", "CANCELLED"], errors="ignore")
+    # Drop columns as they are no longer needed
+    df = df.drop(columns=["DEPARTURE_DELAY", "CANCELLED"])
     log.info(
         "[step 3 | create_target] Dropped DEPARTURE_DELAY and CANCELLED columns."
     )
     return df
 
 
-# ── Step 4 — Drop unlabellable rows ───────────────────────────────────────────
+# Step 4 - Drop unlabellable rows
 
 def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Drop any row where DELAY_CATEGORY is still null after target creation.
-    These are non-cancelled rows without a DEPARTURE_DELAY value — they
-    cannot be assigned to any class. (~340 rows identified in validation.)
     """
     before = len(df)
-    df = df.dropna(subset=["DELAY_CATEGORY"])
+    df = df.dropna(subset=["DELAY_CATEGORY"])   # drop na in column DELAY_CATEGORY (should not happen)
     dropped = before - len(df)
     log.info(
         "[step 4 | drop_unlabellable_rows] Dropped %d rows with no assignable target class.",
@@ -186,32 +155,11 @@ def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Step 5 — Log cancelled-flight quirk ───────────────────────────────────────
-
-def handle_cancelled_quirk(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    97 cancelled flights have a DEPARTURE_TIME (they began taxiing before
-    cancellation). After step 1, DEPARTURE_TIME has been dropped. These rows
-    are valid 'cancelled' class records and are retained. This step only
-    logs the quirk for documentation purposes.
-    """
-    cancelled_count = (df["DELAY_CATEGORY"] == "cancelled").sum()
-    log.info(
-        "[step 5 | handle_cancelled_quirk] %d cancelled-class rows retained. "
-        "Note: 97 of these had a DEPARTURE_TIME (taxied before cancellation) — "
-        "this is a known data quirk, not a quality issue. Rows kept as-is.",
-        cancelled_count,
-    )
-    return df
-
-
-# ── Step 6 — Cap outliers ─────────────────────────────────────────────────────
+# Step 5 - Cap outliers
 
 def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cap values in numeric model-relevant columns at the 1st–99th percentile.
-    Rows are not dropped — extreme values are clipped to the fence values.
-    Logs: column name, original bounds, cap bounds, and rows affected.
+    Set extreme values (outliers) to the 1st and 99th percentiles.
     """
     df = df.copy()
     total_affected = 0
@@ -231,52 +179,49 @@ def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].clip(lower=lower, upper=upper)
             total_affected += affected
             log.info(
-                "[step 6 | cap_outliers] %-30s capped %4d rows "
+                "[step 5 | cap_outliers] %-30s capped %4d rows "
                 "(below %.2f: %d, above %.2f: %d)",
                 col, affected, lower, int(below), upper, int(above),
             )
 
     log.info(
-        "[step 6 | cap_outliers] Total rows affected by capping: %d",
+        "[step 5 | cap_outliers] Total rows affected by capping: %d",
         total_affected,
     )
     return df
 
 
-# ── Step 7 — Drop remaining nulls ─────────────────────────────────────────────
+# Step 6 - Drop remaining nulls
 
 def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
     """
     After all cleaning steps, drop any row that still has a null in a
     feature column that is NOT expected to be null. Expected-null columns
-    (e.g. CANCELLATION_REASON, which is only set for cancelled flights)
+    (for ex. CANCELLATION_REASON, which is only set for cancelled flights)
     are excluded from the check.
     """
     before = len(df)
 
-    # Columns that are legitimately null for most rows — do not use them
-    # to decide whether to drop a row.
     EXPECTED_NULL_COLS = {
         "CANCELLATION_REASON",  # only populated for cancelled flights
     }
 
-    # Only check columns that should never be null after cleaning
     check_cols = [
         c for c in df.columns
-        if c != "DELAY_CATEGORY" and c not in EXPECTED_NULL_COLS
+        if c not in EXPECTED_NULL_COLS
     ]
     df = df.dropna(subset=check_cols)
 
     dropped = before - len(df)
     log.info(
-        "[step 7 | drop_remaining_nulls] Dropped %d rows with residual "
+        "[step 6 | drop_remaining_nulls] Dropped %d rows with residual "
         "null values in non-expected feature columns.",
         dropped,
     )
     return df
 
 
-# ── Step 8 — Validate after cleaning ──────────────────────────────────────────
+# Step 7 - Validate after cleaning
 
 def validate_after_cleaning(df: pd.DataFrame) -> dict:
     """
@@ -284,12 +229,9 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
     that the known issues have been resolved. Results are logged and returned.
 
     Notes:
-        - check_consistency is skipped: it requires CANCELLED and DEPARTURE_TIME
-          which are intentionally dropped in steps 1 and 3.
-        - check_outliers is skipped: it references TAXI_OUT / TAXI_IN / AIR_TIME
-          which are dropped as leakage columns in step 1.
+        We skipped some checks because we dropped the columns that are used in them.
     """
-    log.info("[step 8 | validate_after_cleaning] Re-running validation checks...")
+    log.info("[step 7 | validate_after_cleaning] Re-running validation checks...")
 
     results = {
         "completeness": check_completeness(df),
@@ -299,44 +241,42 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
     for check, result in results.items():
         icon = "\u2713" if result["passed"] else "\u2717"
         log.info(
-            "[step 8 | validate_after_cleaning]   [%s] %-20s %s",
+            "[step 7 | validate_after_cleaning]   [%s] %-20s %s",
             icon, check, result["summary"],
         )
 
     all_passed = all(r["passed"] for r in results.values())
     if not all_passed:
         log.warning(
-            "[step 8 | validate_after_cleaning] Some checks did not pass — "
-            "review the logs above for details."
+            "[step 7 | validate_after_cleaning] Some checks did not pass."
         )
     else:
         log.info(
-            "[step 8 | validate_after_cleaning] All checks passed on cleaned data."
+            "[step 7 | validate_after_cleaning] All checks passed on cleaned data."
         )
 
     return results
 
 
-# ── Step 9 — Train / Validation / Test split ───────────────────────────────────
+# Step 8 - Train / Validation / Test split
 
 def split_data(
     df: pd.DataFrame,
     target_col: str = "DELAY_CATEGORY",
     random_state: int = RANDOM_STATE,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+) -> tuple:
     """
     Stratified 70 / 15 / 15 split.
-    Stratification preserves class proportions across all three splits,
-    which is critical given the 81% / 10% / 8% / 1.5% class imbalance.
+    Stratification preserves class proportions across all three splits.
     """
-    X = df.drop(columns=[target_col])
-    y = df[target_col]
+    X = df.drop(columns=[target_col])   # returns a new copy of df without the target column
+    y = df[target_col]                  
 
     # First split: train (70%) vs temp (30%)
     X_train, X_temp, y_train, y_temp = train_test_split(
         X, y,
         test_size=0.30,
-        stratify=y,
+        stratify=y,         # stratify the data to maintain class proportions
         random_state=random_state,
     )
 
@@ -349,7 +289,7 @@ def split_data(
     )
 
     log.info(
-        "[step 9 | split_data] Split complete — "
+        "[step 8 | split_data] Split complete — "
         "train: %d rows (%.1f%%), val: %d rows (%.1f%%), test: %d rows (%.1f%%)",
         len(X_train), len(X_train) / len(df) * 100,
         len(X_val),   len(X_val)   / len(df) * 100,
@@ -358,12 +298,12 @@ def split_data(
 
     for split_name, y_split in [("train", y_train), ("val", y_val), ("test", y_test)]:
         dist = y_split.value_counts(normalize=True).round(3).to_dict()
-        log.info("[step 9 | split_data] %s class distribution: %s", split_name, dist)
+        log.info("[step 8 | split_data] %s class distribution: %s", split_name, dist)
 
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-# ── Step 10 — Before / after summary ──────────────────────────────────────────
+# Step 9 - Before / after summary
 
 def summarize(
     df_before: pd.DataFrame,
@@ -380,7 +320,7 @@ def summarize(
         return int(df.isnull().sum().sum())
 
     def _class_dist(series: pd.Series) -> dict:
-        return series.value_counts(normalize=False).to_dict()
+        return series.value_counts(normalize=False).to_dict()   # use normalize to return raw counts not percentages
 
     summary = {
         "before": {
@@ -405,10 +345,10 @@ def summarize(
         },
     }
 
-    log.info("[step 10 | summarize] Before: %d rows × %d cols, %d missing cells",
+    log.info("[step 9 | summarize] Before: %d rows × %d cols, %d missing cells",
              summary["before"]["rows"], summary["before"]["columns"],
              summary["before"]["missing_cells"])
-    log.info("[step 10 | summarize] After:  %d rows × %d cols, %d missing cells "
+    log.info("[step 9 | summarize] After:  %d rows × %d cols, %d missing cells "
              "(%d rows dropped, %d cols dropped)",
              summary["after"]["rows"], summary["after"]["columns"],
              summary["after"]["missing_cells"],
@@ -418,7 +358,7 @@ def summarize(
     return summary
 
 
-# ── Main pipeline ──────────────────────────────────────────────────────────────
+# Main pipeline
 
 def run_pipeline(df: pd.DataFrame) -> PipelineResult:
     """
@@ -430,30 +370,28 @@ def run_pipeline(df: pd.DataFrame) -> PipelineResult:
         2.  drop_numeric_airport_rows — remove rows with no IATA/weather match
         3.  create_target             — build 4-class DELAY_CATEGORY
         4.  drop_unlabellable_rows    — remove rows with no assignable class
-        5.  handle_cancelled_quirk    — log the 97 cancelled-but-taxied rows
-        6.  cap_outliers              — 1st–99th percentile capping
-        7.  drop_remaining_nulls      — drop any residual unexpected nulls
-        8.  validate_after_cleaning   — re-run validation checks
-        9.  split_data                — stratified 70/15/15 split
-        10. summarize                 — before/after summary dict
+        5.  cap_outliers              — 1st–99th percentile capping
+        6.  drop_remaining_nulls      — drop any residual unexpected nulls
+        7.  validate_after_cleaning   — re-run validation checks
+        8.  split_data                — stratified 70/15/15 split
+        9.  summarize                 — before/after summary dict
 
     Returns:
         PipelineResult with X_train, X_val, X_test, y_train, y_val, y_test,
         and a summary dict.
     """
     log.info("=" * 60)
-    log.info("PREPROCESSING PIPELINE — START")
+    log.info("PREPROCESSING PIPELINE - START")
     log.info("Input: %d rows × %d columns", *df.shape)
     log.info("=" * 60)
 
     df_before = df.copy()  # keep an unmodified snapshot for the summary
-    df = df.copy()         # work on a copy — never mutate the caller's data
+    df = df.copy()         # work on a copy to not mutate the original df
 
     df = drop_leakage_columns(df)
     df = drop_numeric_airport_rows(df)
     df = create_target(df)
     df = drop_unlabellable_rows(df)
-    df = handle_cancelled_quirk(df)
     df = cap_outliers(df)
     df = drop_remaining_nulls(df)
 
@@ -482,7 +420,7 @@ def run_pipeline(df: pd.DataFrame) -> PipelineResult:
     )
 
 
-# ── Smoke-run entry point ──────────────────────────────────────────────────────
+# Entry point
 
 def main() -> None:
     import os
