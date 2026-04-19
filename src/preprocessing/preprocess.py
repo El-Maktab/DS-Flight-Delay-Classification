@@ -10,11 +10,11 @@ Description:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TypedDict
 
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 # Import validation checks so we can re-run them after cleaning
 from src.validation.validate import (
@@ -258,49 +258,20 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
     return results
 
 
-# Step 8 - Train / Validation / Test split
+# Step 8 - Save cleaned data to CSV
 
-def split_data(
-    df: pd.DataFrame,
-    target_col: str = "DELAY_CATEGORY",
-    random_state: int = RANDOM_STATE,
-) -> tuple:
+def save_to_csv(df: pd.DataFrame, output_path: Path) -> None:
     """
-    Stratified 70 / 15 / 15 split.
-    Stratification preserves class proportions across all three splits.
+    Save the cleaned DataFrame to a CSV file so downstream stages
+    (feature engineering, modelling) can load it without re-running
+    preprocessing.
     """
-    X = df.drop(columns=[target_col])   # returns a new copy of df without the target column
-    y = df[target_col]                  
-
-    # First split: train (70%) vs temp (30%)
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y,
-        test_size=0.30,
-        stratify=y,         # stratify the data to maintain class proportions
-        random_state=random_state,
-    )
-
-    # Second split: val (15%) vs test (15%) from the 30% temp
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp,
-        test_size=0.50,
-        stratify=y_temp,
-        random_state=random_state,
-    )
-
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
     log.info(
-        "[step 8 | split_data] Split complete — "
-        "train: %d rows (%.1f%%), val: %d rows (%.1f%%), test: %d rows (%.1f%%)",
-        len(X_train), len(X_train) / len(df) * 100,
-        len(X_val),   len(X_val)   / len(df) * 100,
-        len(X_test),  len(X_test)  / len(df) * 100,
+        "[step 8 | save_to_csv] Saved %d rows × %d columns to %s",
+        *df.shape, output_path,
     )
-
-    for split_name, y_split in [("train", y_train), ("val", y_val), ("test", y_test)]:
-        dist = y_split.value_counts(normalize=True).round(3).to_dict()
-        log.info("[step 8 | split_data] %s class distribution: %s", split_name, dist)
-
-    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 # Step 9 - Before / after summary
@@ -308,19 +279,12 @@ def split_data(
 def summarize(
     df_before: pd.DataFrame,
     df_after: pd.DataFrame,
-    y_train: pd.Series,
-    y_val: pd.Series,
-    y_test: pd.Series,
 ) -> dict:
     """
-    Build a summary dict comparing the dataset before and after cleaning,
-    and documenting the final split sizes and class distributions.
+    Build a summary dict comparing the dataset before and after cleaning.
     """
     def _missing(df: pd.DataFrame) -> int:
         return int(df.isnull().sum().sum())
-
-    def _class_dist(series: pd.Series) -> dict:
-        return series.value_counts(normalize=False).to_dict()   # use normalize to return raw counts not percentages
 
     summary = {
         "before": {
@@ -334,14 +298,6 @@ def summarize(
             "missing_cells": _missing(df_after),
             "rows_dropped": len(df_before) - len(df_after),
             "columns_dropped": len(df_before.columns) - len(df_after.columns),
-        },
-        "split": {
-            "train_rows": len(y_train),
-            "val_rows":   len(y_val),
-            "test_rows":  len(y_test),
-            "train_class_dist": _class_dist(y_train),
-            "val_class_dist":   _class_dist(y_val),
-            "test_class_dist":  _class_dist(y_test),
         },
     }
 
@@ -360,7 +316,7 @@ def summarize(
 
 # Main pipeline
 
-def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series, dict]:
+def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.DataFrame, dict]:
     """
     Run the full preprocessing pipeline on a copy of the input DataFrame.
     The original DataFrame is never mutated.
@@ -373,13 +329,23 @@ def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
         5.  cap_outliers              — 1st–99th percentile capping
         6.  drop_remaining_nulls      — drop any residual unexpected nulls
         7.  validate_after_cleaning   — re-run validation checks
-        8.  split_data                — stratified 70/15/15 split
+        8.  save to CSV               — write cleaned data to output_path
         9.  summarize                 — before/after summary dict
 
+    Data splitting is intentionally deferred to the feature engineering /
+    modelling stage.
+
+    Args:
+        df:          Input DataFrame (flights_weather.csv).
+        output_path: Where to save the cleaned CSV.
+                     Defaults to data/processed/flights_cleaned.csv.
+
     Returns:
-        PipelineResult with X_train, X_val, X_test, y_train, y_val, y_test,
-        and a summary dict.
+        (df_cleaned, summary)
     """
+    if output_path is None:
+        output_path = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed")) / "flights_cleaned.csv"
+
     log.info("=" * 60)
     log.info("PREPROCESSING PIPELINE - START")
     log.info("Input: %d rows × %d columns", *df.shape)
@@ -397,9 +363,9 @@ def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
 
     validation_results = validate_after_cleaning(df)
 
-    X_train, X_val, X_test, y_train, y_val, y_test = split_data(df)
+    save_to_csv(df, output_path)
 
-    summary = summarize(df_before, df, y_train, y_val, y_test)
+    summary = summarize(df_before, df)
     summary["validation_after_cleaning"] = {
         k: {"passed": v["passed"], "summary": v["summary"]}
         for k, v in validation_results.items()
@@ -409,22 +375,12 @@ def run_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
     log.info("PREPROCESSING PIPELINE — DONE")
     log.info("=" * 60)
 
-    return (
-        X_train,
-        X_val,
-        X_test,
-        y_train,
-        y_val,
-        y_test,
-        summary
-    )
+    return df, summary
 
 
 # Entry point
 
 def main() -> None:
-    import os
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s — %(levelname)s — %(message)s",
@@ -437,24 +393,15 @@ def main() -> None:
     df = pd.read_csv(data_path, low_memory=False)
     log.info("Loaded %d rows × %d columns", *df.shape)
 
-    result = run_pipeline(df)
+    _, summary = run_pipeline(df)
 
     print("\n" + "=" * 60)
     print("PREPROCESSING SUMMARY")
     print("=" * 60)
-    summary = result[6]
     print(f"  Before : {summary['before']['rows']:>7,} rows × {summary['before']['columns']} columns")
     print(f"  After  : {summary['after']['rows']:>7,} rows × {summary['after']['columns']} columns")
     print(f"  Dropped: {summary['after']['rows_dropped']:>7,} rows, {summary['after']['columns_dropped']} columns")
     print(f"  Missing cells after: {summary['after']['missing_cells']}")
-    print()
-    print(f"  Train : {summary['split']['train_rows']:>7,} rows")
-    print(f"  Val   : {summary['split']['val_rows']:>7,} rows")
-    print(f"  Test  : {summary['split']['test_rows']:>7,} rows")
-    print()
-    print("  Train class distribution:")
-    for cls, count in sorted(summary["split"]["train_class_dist"].items()):
-        print(f"    {cls:<15} {count:>7,}")
     print()
     print("  Post-cleaning validation:")
     for check, res in summary["validation_after_cleaning"].items():
