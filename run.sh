@@ -9,6 +9,7 @@
 #   5. Run data sampling        → data/raw/flights_sampled.csv
 #   6. Run weather enrichment   → data/processed/flights_weather.csv
 #   7. Run validation           → prints validation report to stdout
+#   8. Run preprocessing        → prints preprocessing summary to stdout
 
 set -euo pipefail
 
@@ -68,3 +69,7 @@ poetry run python src/acquisition/weather.py
 # ── 7. Validation ──────────────────────────────────────────────────────────────
 step "Running validation (src/validation/validate.py)..."
 poetry run python src/validation/validate.py
+
+# ── 8. Preprocessing ───────────────────────────────────────────────────────────
+step "Running preprocessing (src/preprocessing/preprocess.py)..."
+poetry run python -m src.preprocessing.preprocess
