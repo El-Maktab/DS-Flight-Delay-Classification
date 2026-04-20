@@ -1,0 +1,13 @@
+paths:
+  raw_data_dir: data/raw
+  processed_data_dir: data/processed
+  external_data_dir: data/external
+
+training:
+  random_state: 42
+
+tracking:
+  mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
+  mlflow_experiment_name: flight-delay-classification
+  mlflow_run_name_prefix: fdc
+  artifact_root: mlruns/artifacts
