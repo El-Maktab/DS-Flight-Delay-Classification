@@ -59,17 +59,17 @@ else
 fi
 
 # ── 5. Sampling ────────────────────────────────────────────────────────────────
-step "Running data sampling (src/acquisition/sample.py)..."
-poetry run python src/acquisition/sample.py
+step "Running data sampling (flight_delay_classification/acquisition/sample.py)..."
+poetry run python -m flight_delay_classification.acquisition.sample
 
 # ── 6. Weather enrichment ──────────────────────────────────────────────────────
-step "Running weather enrichment (src/acquisition/weather.py)..."
-poetry run python src/acquisition/weather.py
+step "Running weather enrichment (flight_delay_classification/acquisition/weather.py)..."
+poetry run python -m flight_delay_classification.acquisition.weather
 
 # ── 7. Validation ──────────────────────────────────────────────────────────────
-step "Running validation (src/validation/validate.py)..."
-poetry run python src/validation/validate.py
+step "Running validation (flight_delay_classification/validation/validate.py)..."
+poetry run python -m flight_delay_classification.validation.validate
 
 # ── 8. Preprocessing ───────────────────────────────────────────────────────────
-step "Running preprocessing (src/preprocessing/preprocess.py)..."
-poetry run python -m src.preprocessing.preprocess
+step "Running preprocessing (flight_delay_classification/preprocessing/preprocess.py)..."
+poetry run python -m flight_delay_classification.preprocessing.preprocess

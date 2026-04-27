@@ -17,7 +17,7 @@ from typing import TypedDict
 import pandas as pd
 
 # Import validation checks so we can re-run them after cleaning
-from src.validation.validate import (
+from flight_delay_classification.validation.validate import (
     check_completeness,
     check_ranges,
 )

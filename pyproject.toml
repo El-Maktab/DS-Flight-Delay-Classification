@@ -1,10 +1,19 @@
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
 [tool.poetry]
 name = "flight-delay-classification"
 version = "0.1.0"
 description = "Supervised multi-class classification of flight delay severity using historical flight data and weather API enrichment."
-authors = []
+authors = ["El-Maktab"]
+license = "MIT"
 readme = "README.md"
-packages = [{ include = "src" }]
+packages = [{ include = "flight_delay_classification" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -15,6 +24,9 @@ python-dotenv = "^1.0"
 timezonefinder = "^6.5"
 matplotlib = "^3.10.8"
 scikit-learn = "^1.8.0"
+loguru = "*"
+tqdm = "*"
+typer = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1"
@@ -23,18 +35,23 @@ ruff = "^0.4"
 ipykernel = "^6.29"
 gdown = "^5.2"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
 [tool.black]
 line-length = 88
 target-version = ["py311"]
 
 [tool.ruff]
 line-length = 88
+src = ["flight_delay_classification"]
+include = ["pyproject.toml", "flight_delay_classification/**/*.py"]
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["flight_delay_classification"]
+force-sort-within-sections = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src --cov-report=term-missing"
+addopts = "--cov=flight_delay_classification --cov-report=term-missing"
+
