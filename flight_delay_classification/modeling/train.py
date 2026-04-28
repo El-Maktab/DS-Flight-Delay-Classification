@@ -8,6 +8,7 @@ Description:
 
 from __future__ import annotations
 
+import json
 import pickle
 from pathlib import Path
 from typing import Any
@@ -26,19 +27,24 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     f1_score,
-    recall_score,
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 import typer
 
-from flight_delay_classification.config import MODELS_DIR, PROCESSED_DATA_DIR, PROJ_ROOT
+from flight_delay_classification.config import (
+    MODELS_DIR,
+    PROCESSED_DATA_DIR,
+    PROJ_ROOT,
+    REPORTS_DIR,
+)
+from flight_delay_classification.evaluation.evaluate import evaluate_predictions
 
 app = typer.Typer()
 
 TARGET_COLUMN = "DELAY_CATEGORY"
 CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
-DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline"
+DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline-better-eval"
 MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
 RANDOM_STATE = 42
 MODEL_MODES = (
@@ -62,11 +68,14 @@ def train_logistic_model(
 ) -> Pipeline:
     model = Pipeline(
         steps=[
-            ("scaler", StandardScaler()), # NOTE: scaling is important for logistic regression
+            (
+                "scaler",
+                StandardScaler(),
+            ),  # NOTE: scaling is important for logistic regression
             (
                 "classifier",
                 LogisticRegression(
-                    class_weight=class_weight, # NOTE: "balanced" is important for class imbalance (it tells the model to focus on minority classes)
+                    class_weight=class_weight,  # NOTE: "balanced" is important for class imbalance (it tells the model to focus on minority classes)
                     max_iter=max_iter,
                     random_state=random_state,
                 ),
@@ -88,7 +97,7 @@ def train_random_forest_model(
 ) -> RandomForestClassifier:
     model = RandomForestClassifier(
         n_estimators=n_estimators,
-        class_weight=class_weight, # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
+        class_weight=class_weight,  # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
         min_samples_leaf=min_samples_leaf,
         max_depth=max_depth,
         random_state=random_state,
@@ -104,17 +113,18 @@ def build_evaluation_outputs(
 ) -> tuple[dict[str, float], dict[str, Any], pd.DataFrame]:
     metrics = {
         "accuracy": accuracy_score(y_true, y_pred),
-        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred), # NOTE: from docs "The balanced accuracy in binary and multiclass classification problems to deal with imbalanced datasets. It is defined as the average of recall obtained on each class."
+        "balanced_accuracy": balanced_accuracy_score(
+            y_true, y_pred
+        ),  # NOTE: from docs "The balanced accuracy in binary and multiclass classification problems to deal with imbalanced datasets. It is defined as the average of recall obtained on each class."
         "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
         "weighted_f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
-        "macro_recall": recall_score(y_true, y_pred, average="macro", zero_division=0),
     }
     report = classification_report(
         y_true,
         y_pred,
         labels=CLASS_ORDER,
         output_dict=True,
-        zero_division=0, # NOTE: this prevents metrics from being NaN when there are no samples for a class in y_true or y_pred
+        zero_division=0,  # NOTE: this prevents metrics from being NaN when there are no samples for a class in y_true or y_pred
     )
     confusion = pd.DataFrame(
         confusion_matrix(y_true, y_pred, labels=CLASS_ORDER),
@@ -151,6 +161,10 @@ def train_and_log_model(
     test_features_path: Path,
     test_labels_path: Path,
     model_path: Path,
+    evaluation_report_path: Path = REPORTS_DIR
+    / "evaluation"
+    / "evaluation_report.json",
+    predictions_path: Path = PROCESSED_DATA_DIR / "test_predictions.csv",
     experiment_name: str = DEFAULT_EXPERIMENT_NAME,
     run_name: str | None = None,
     tracking_uri: str | None = None,
@@ -163,7 +177,9 @@ def train_and_log_model(
     random_state: int = RANDOM_STATE,
 ) -> dict[str, Any]:
     if model_mode not in MODEL_MODES:
-        raise ValueError(f"Invalid model_mode '{model_mode}'. Use one of: {MODEL_MODES}")
+        raise ValueError(
+            f"Invalid model_mode '{model_mode}'. Use one of: {MODEL_MODES}"
+        )
 
     X_train = pd.read_csv(features_path)
     y_train = read_labels(labels_path)
@@ -198,7 +214,19 @@ def train_and_log_model(
         majority_class = y_train.value_counts().idxmax()
         y_pred = pd.Series([majority_class] * len(y_test), name=TARGET_COLUMN)
 
-    metrics, report, confusion = build_evaluation_outputs(y_test, y_pred)
+    evaluation_report = evaluate_predictions(
+        y_true=y_test,
+        y_pred=y_pred,
+        predictions_path=predictions_path,
+    )
+    metrics = evaluation_report["core_metrics"]
+    cost_metrics = evaluation_report["cost_metrics"]
+
+    evaluation_report_path.parent.mkdir(parents=True, exist_ok=True)
+    evaluation_report_path.write_text(
+        json.dumps(evaluation_report, indent=2),
+        encoding="utf-8",
+    )
 
     resolved_model_path: str | None = None
     if model is not None:
@@ -237,9 +265,7 @@ def train_and_log_model(
                     )
                 ),
                 "preprocessing": (
-                    "StandardScaler"
-                    if model_mode.startswith("logreg")
-                    else "none"
+                    "StandardScaler" if model_mode.startswith("logreg") else "none"
                 ),
                 "class_weight": class_weight,
                 "max_iter": max_iter,
@@ -252,6 +278,7 @@ def train_and_log_model(
             }
         )
         mlflow.log_metrics(metrics)
+        mlflow.log_metrics(cost_metrics)
         if model is not None:
             mlflow.sklearn.log_model(
                 sk_model=model,
@@ -259,8 +286,8 @@ def train_and_log_model(
                 signature=infer_signature(sample, model.predict(sample)),
                 input_example=sample,
             )
-        mlflow.log_dict(report, "evaluation/classification_report.json")
-        mlflow.log_text(confusion.to_csv(), "evaluation/confusion_matrix.csv")
+        mlflow.log_dict(evaluation_report, "evaluation/evaluation_report.json")
+        mlflow.log_artifact(str(predictions_path), "evaluation")
 
     if resolved_model_path is not None:
         logger.info("Saved model to {}", resolved_model_path)
@@ -282,6 +309,10 @@ def main(
     test_features_path: Path = PROCESSED_DATA_DIR / "test_features.csv",
     test_labels_path: Path = PROCESSED_DATA_DIR / "test_labels.csv",
     model_path: Path = MODELS_DIR / "model.pkl",
+    evaluation_report_path: Path = REPORTS_DIR
+    / "evaluation"
+    / "evaluation_report.json",
+    predictions_path: Path = PROCESSED_DATA_DIR / "test_predictions.csv",
     experiment_name: str = DEFAULT_EXPERIMENT_NAME,
     run_name: str | None = None,
     tracking_uri: str | None = None,
@@ -299,6 +330,8 @@ def main(
         test_features_path=test_features_path,
         test_labels_path=test_labels_path,
         model_path=model_path,
+        evaluation_report_path=evaluation_report_path,
+        predictions_path=predictions_path,
         experiment_name=experiment_name,
         run_name=run_name,
         tracking_uri=tracking_uri,
