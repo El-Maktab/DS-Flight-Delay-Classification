@@ -27,6 +27,7 @@ scikit-learn = "^1.8.0"
 loguru = "*"
 tqdm = "*"
 typer = "*"
+mlflow = "^3.11.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1"
