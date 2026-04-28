@@ -67,6 +67,11 @@ create_environment:
 data: requirements
 	$(PYTHON_INTERPRETER) flight_delay_classification/dataset.py
 
+## Generate features
+.PHONY: features
+features:
+	poetry run python -m flight_delay_classification.features
+
 
 #################################################################################
 # Self Documenting Commands                                                     #
