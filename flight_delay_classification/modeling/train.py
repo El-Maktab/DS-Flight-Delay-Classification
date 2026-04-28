@@ -1,29 +1,211 @@
-from pathlib import Path
+"""
+Author: Amir Anwar
+Date: 2026-04-28
 
+Description:
+    Basic Model training
+"""
+
+from __future__ import annotations
+
+import pickle
+from pathlib import Path
+from typing import Any
+
+import mlflow
+import mlflow.sklearn
+import pandas as pd
 from loguru import logger
-from tqdm import tqdm
+from mlflow import MlflowClient
+from mlflow.models import infer_signature
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    recall_score,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 import typer
 
-from flight_delay_classification.config import MODELS_DIR, PROCESSED_DATA_DIR
+from flight_delay_classification.config import MODELS_DIR, PROCESSED_DATA_DIR, PROJ_ROOT
 
 app = typer.Typer()
+
+TARGET_COLUMN = "DELAY_CATEGORY"
+CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
+DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline"
+MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
+RANDOM_STATE = 42
+
+
+def read_labels(labels_path: Path) -> pd.Series:
+    return pd.read_csv(labels_path)[TARGET_COLUMN]
+
+
+def train_baseline_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    max_iter: int,
+    random_state: int,
+) -> Pipeline:
+    model = Pipeline(
+        steps=[
+            ("scaler", StandardScaler()), # NOTE: scaling is important for logistic regression
+            (
+                "classifier",
+                LogisticRegression(
+                    class_weight="balanced", # NOTE: this important for class imbalance (it tells the model to focus on minority classes)
+                    max_iter=max_iter,
+                    random_state=random_state,
+                ),
+            ),
+        ]
+    )
+    model.fit(X_train, y_train)
+    return model
+
+
+def build_evaluation_outputs(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+) -> tuple[dict[str, float], dict[str, Any], pd.DataFrame]:
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred), # NOTE: from docs "The balanced accuracy in binary and multiclass classification problems to deal with imbalanced datasets. It is defined as the average of recall obtained on each class."
+        "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
+        "weighted_f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
+        "macro_recall": recall_score(y_true, y_pred, average="macro", zero_division=0),
+    }
+    report = classification_report(
+        y_true,
+        y_pred,
+        labels=CLASS_ORDER,
+        output_dict=True,
+        zero_division=0, # NOTE: this prevents metrics from being NaN when there are no samples for a class in y_true or y_pred
+    )
+    confusion = pd.DataFrame(
+        confusion_matrix(y_true, y_pred, labels=CLASS_ORDER),
+        index=CLASS_ORDER,
+        columns=CLASS_ORDER,
+    )
+    return metrics, report, confusion
+
+
+def configure_mlflow(tracking_uri: str | None, experiment_name: str) -> str:
+    resolved_uri = tracking_uri or MLFLOW_DB_URI
+    mlflow.set_tracking_uri(resolved_uri)
+
+    client = MlflowClient()
+    if client.get_experiment_by_name(experiment_name) is None:
+        if resolved_uri.startswith("sqlite:///"):
+            db_path = Path(resolved_uri.removeprefix("sqlite:///"))
+            artifact_dir = db_path.parent / "mlartifacts" / experiment_name
+        else:
+            artifact_dir = PROJ_ROOT / "mlartifacts" / experiment_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        client.create_experiment(
+            name=experiment_name,
+            artifact_location=artifact_dir.resolve().as_uri(),
+        )
+
+    mlflow.set_experiment(experiment_name)
+    return resolved_uri
+
+
+def train_and_log_model(
+    features_path: Path,
+    labels_path: Path,
+    test_features_path: Path,
+    test_labels_path: Path,
+    model_path: Path,
+    experiment_name: str = DEFAULT_EXPERIMENT_NAME,
+    run_name: str | None = None,
+    tracking_uri: str | None = None,
+    max_iter: int = 2000,
+    random_state: int = RANDOM_STATE,
+) -> dict[str, Any]:
+    X_train = pd.read_csv(features_path)
+    y_train = read_labels(labels_path)
+    X_test = pd.read_csv(test_features_path)
+    y_test = read_labels(test_labels_path)
+
+    model = train_baseline_model(X_train, y_train, max_iter, random_state)
+    y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
+    metrics, report, confusion = build_evaluation_outputs(y_test, y_pred)
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    with model_path.open("wb") as f:
+        pickle.dump(model, f)
+
+    resolved_uri = configure_mlflow(tracking_uri, experiment_name)
+    sample = X_train.head(5)
+    with mlflow.start_run(run_name=run_name) as run:
+        mlflow.set_tags(
+            {"stage": "baseline_training", "model_family": "logistic_regression"}
+        )
+        mlflow.log_params(
+            {
+                "algorithm": "LogisticRegression",
+                "preprocessing": "StandardScaler",
+                "class_weight": "balanced",
+                "max_iter": max_iter,
+                "train_rows": len(X_train),
+                "feature_columns": len(X_train.columns),
+            }
+        )
+        mlflow.log_metrics(metrics)
+        mlflow.sklearn.log_model(
+            sk_model=model,
+            name="model",
+            signature=infer_signature(sample, model.predict(sample)),
+            input_example=sample,
+        )
+        mlflow.log_dict(report, "evaluation/classification_report.json")
+        mlflow.log_text(confusion.to_csv(), "evaluation/confusion_matrix.csv")
+
+    logger.info("Saved model to {}", model_path)
+    logger.info("MLflow run {}", run.info.run_id)
+    logger.info("Metrics: {}", metrics)
+    return {
+        "model_path": str(model_path),
+        "run_id": run.info.run_id,
+        "tracking_uri": resolved_uri,
+        "metrics": metrics,
+        "class_order": CLASS_ORDER,
+    }
 
 
 @app.command()
 def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
     features_path: Path = PROCESSED_DATA_DIR / "features.csv",
     labels_path: Path = PROCESSED_DATA_DIR / "labels.csv",
+    test_features_path: Path = PROCESSED_DATA_DIR / "test_features.csv",
+    test_labels_path: Path = PROCESSED_DATA_DIR / "test_labels.csv",
     model_path: Path = MODELS_DIR / "model.pkl",
-    # -----------------------------------------
-):
-    # ---- REPLACE THIS WITH YOUR OWN CODE ----
-    logger.info("Training some model...")
-    for i in tqdm(range(10), total=10):
-        if i == 5:
-            logger.info("Something happened for iteration 5.")
-    logger.success("Modeling training complete.")
-    # -----------------------------------------
+    experiment_name: str = DEFAULT_EXPERIMENT_NAME,
+    run_name: str | None = None,
+    tracking_uri: str | None = None,
+    max_iter: int = 2000,
+    random_state: int = RANDOM_STATE,
+) -> None:
+    summary = train_and_log_model(
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+        model_path=model_path,
+        experiment_name=experiment_name,
+        run_name=run_name,
+        tracking_uri=tracking_uri,
+        max_iter=max_iter,
+        random_state=random_state,
+    )
+
+    logger.success("Training complete : {}", summary)
 
 
 if __name__ == "__main__":

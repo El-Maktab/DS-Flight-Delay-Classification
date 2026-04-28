@@ -5,6 +5,8 @@
 PROJECT_NAME = DS-Flight-Delay-Classification
 PYTHON_VERSION = 3.11
 PYTHON_INTERPRETER = python
+MLFLOW_TRACKING_URI = sqlite:///$(CURDIR)/mlflow.db
+MLFLOW_ARTIFACT_ROOT = file:///$(CURDIR)/mlartifacts
 
 #################################################################################
 # COMMANDS                                                                      #
@@ -71,6 +73,16 @@ data: requirements
 .PHONY: features
 features:
 	poetry run python -m flight_delay_classification.features
+
+## Train
+.PHONY: train
+train:
+	poetry run python -m flight_delay_classification.modeling.train
+
+## Open MLflow UI
+.PHONY: mlflow-ui
+mlflow-ui:
+	poetry run mlflow ui --backend-store-uri "$(MLFLOW_TRACKING_URI)" --default-artifact-root "$(MLFLOW_ARTIFACT_ROOT)"
 
 
 #################################################################################
