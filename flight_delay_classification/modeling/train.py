@@ -18,6 +18,7 @@ import pandas as pd
 from loguru import logger
 from mlflow import MlflowClient
 from mlflow.models import infer_signature
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -40,7 +41,12 @@ CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
 DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline"
 MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
 RANDOM_STATE = 42
-MODEL_MODES = ("logreg_balanced", "logreg_unbalanced", "majority_baseline")
+MODEL_MODES = (
+    "logreg_balanced",
+    "logreg_unbalanced",
+    "majority_baseline",
+    "random_forest",
+)
 
 
 def read_labels(labels_path: Path) -> pd.Series:
@@ -66,6 +72,27 @@ def train_logistic_model(
                 ),
             ),
         ]
+    )
+    model.fit(X_train, y_train)
+    return model
+
+
+def train_random_forest_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    random_state: int,
+    n_estimators: int,
+    class_weight: str | None,
+    min_samples_leaf: int,
+    max_depth: int | None,
+) -> RandomForestClassifier:
+    model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        class_weight=class_weight, # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
+        min_samples_leaf=min_samples_leaf,
+        max_depth=max_depth,
+        random_state=random_state,
+        n_jobs=-1,
     )
     model.fit(X_train, y_train)
     return model
@@ -129,6 +156,10 @@ def train_and_log_model(
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
     max_iter: int = 2000,
+    rf_n_estimators: int = 300,
+    rf_class_weight: str | None = "balanced_subsample",
+    rf_min_samples_leaf: int = 5,
+    rf_max_depth: int | None = 25,
     random_state: int = RANDOM_STATE,
 ) -> dict[str, Any]:
     if model_mode not in MODEL_MODES:
@@ -139,7 +170,7 @@ def train_and_log_model(
     X_test = pd.read_csv(test_features_path)
     y_test = read_labels(test_labels_path)
 
-    model: Pipeline | None = None
+    model: Any | None = None
     class_weight: str | None = None
     if model_mode == "logreg_balanced":
         class_weight = "balanced"
@@ -150,6 +181,17 @@ def train_and_log_model(
     elif model_mode == "logreg_unbalanced":
         model = train_logistic_model(
             X_train, y_train, max_iter, random_state, class_weight=None
+        )
+        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
+    elif model_mode == "random_forest":
+        model = train_random_forest_model(
+            X_train,
+            y_train,
+            random_state=random_state,
+            n_estimators=rf_n_estimators,
+            class_weight=rf_class_weight,
+            min_samples_leaf=rf_min_samples_leaf,
+            max_depth=rf_max_depth,
         )
         y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
     else:
@@ -174,7 +216,11 @@ def train_and_log_model(
                 "model_family": (
                     "majority_baseline"
                     if model_mode == "majority_baseline"
-                    else "logistic_regression"
+                    else (
+                        "random_forest"
+                        if model_mode == "random_forest"
+                        else "logistic_regression"
+                    )
                 ),
             }
         )
@@ -184,13 +230,23 @@ def train_and_log_model(
                 "algorithm": (
                     "majority_baseline"
                     if model_mode == "majority_baseline"
-                    else "LogisticRegression"
+                    else (
+                        "RandomForestClassifier"
+                        if model_mode == "random_forest"
+                        else "LogisticRegression"
+                    )
                 ),
                 "preprocessing": (
-                    "none" if model_mode == "majority_baseline" else "StandardScaler"
+                    "StandardScaler"
+                    if model_mode.startswith("logreg")
+                    else "none"
                 ),
                 "class_weight": class_weight,
                 "max_iter": max_iter,
+                "rf_n_estimators": rf_n_estimators,
+                "rf_class_weight": rf_class_weight,
+                "rf_min_samples_leaf": rf_min_samples_leaf,
+                "rf_max_depth": rf_max_depth,
                 "train_rows": len(X_train),
                 "feature_columns": len(X_train.columns),
             }
@@ -231,6 +287,10 @@ def main(
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
     max_iter: int = 2000,
+    rf_n_estimators: int = 300,
+    rf_class_weight: str | None = "balanced_subsample",
+    rf_min_samples_leaf: int = 5,
+    rf_max_depth: int | None = 25,
     random_state: int = RANDOM_STATE,
 ) -> None:
     summary = train_and_log_model(
@@ -244,6 +304,10 @@ def main(
         tracking_uri=tracking_uri,
         model_mode=model_mode,
         max_iter=max_iter,
+        rf_n_estimators=rf_n_estimators,
+        rf_class_weight=rf_class_weight,
+        rf_min_samples_leaf=rf_min_samples_leaf,
+        rf_max_depth=rf_max_depth,
         random_state=random_state,
     )
 
