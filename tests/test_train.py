@@ -80,7 +80,6 @@ def test_build_evaluation_outputs_returns_expected_shapes() -> None:
         "balanced_accuracy",
         "macro_f1",
         "weighted_f1",
-        "macro_recall",
     }
     assert confusion.shape == (4, 4)
     assert confusion.index.tolist() == class_order

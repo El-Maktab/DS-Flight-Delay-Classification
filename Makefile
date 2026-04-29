@@ -79,6 +79,11 @@ features:
 train:
 	poetry run python -m flight_delay_classification.modeling.train
 
+## Evaluate
+.PHONY: evaluate
+evaluate:
+	poetry run python -m flight_delay_classification.evaluation.evaluate
+
 ## Open MLflow UI
 .PHONY: mlflow-ui
 mlflow-ui:
