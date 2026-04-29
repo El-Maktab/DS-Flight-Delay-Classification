@@ -41,6 +41,7 @@ from flight_delay_classification.config import (
     REPORTS_DIR,
 )
 from flight_delay_classification.evaluation.evaluate import evaluate_predictions
+from flight_delay_classification.features import apply_smote
 
 app = typer.Typer()
 
@@ -196,6 +197,7 @@ def train_and_log_model(
     run_name: str | None = None,
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
+    use_smote: bool = False,
     max_iter: int = 2000,
     rf_n_estimators: int = 300,
     rf_class_weight: str | None = "balanced_subsample",
@@ -212,6 +214,9 @@ def train_and_log_model(
     y_train = read_labels(labels_path)
     X_test = pd.read_csv(test_features_path)
     y_test = read_labels(test_labels_path)
+
+    if use_smote:
+        X_train, y_train = apply_smote(X_train, y_train, random_state)
 
     model: Any | None = None
     class_weight: str | None = None
@@ -298,6 +303,7 @@ def train_and_log_model(
                 "preprocessing": (
                     "StandardScaler" if model_mode.startswith("logreg") else "none"
                 ),
+                "use_smote": use_smote,
                 "class_weight": class_weight,
                 "max_iter": max_iter,
                 "rf_n_estimators": rf_n_estimators,
@@ -349,6 +355,7 @@ def main(
     run_name: str | None = None,
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
+    use_smote: bool = False,
     max_iter: int = 2000,
     rf_n_estimators: int = 300,
     rf_class_weight: str | None = "balanced_subsample",
@@ -368,6 +375,7 @@ def main(
         run_name=run_name,
         tracking_uri=tracking_uri,
         model_mode=model_mode,
+        use_smote=use_smote,
         max_iter=max_iter,
         rf_n_estimators=rf_n_estimators,
         rf_class_weight=rf_class_weight,

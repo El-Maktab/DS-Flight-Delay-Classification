@@ -9,6 +9,7 @@ Description:
 from pathlib import Path
 
 import pandas as pd
+from imblearn.over_sampling import SMOTE
 from loguru import logger
 import typer
 
@@ -56,6 +57,24 @@ def split_dataset(
     test_df = df.loc[test_indices].sample(frac=1, random_state=random_state)
 
     return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+
+
+def apply_smote(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    random_state: int = RANDOM_STATE,
+) -> tuple[pd.DataFrame, pd.Series]:
+    smote = SMOTE(random_state=random_state)
+    X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+    X_resampled = pd.DataFrame(X_resampled, columns=X_train.columns)
+    y_resampled = pd.Series(y_resampled, name=y_train.name)
+
+    logger.info(
+        "SMOTE applied: {} -> {} samples",
+        len(X_train),
+        len(X_resampled),
+    )
+    return X_resampled, y_resampled
 
 
 def build_feature_matrices(
