@@ -25,6 +25,12 @@ NON_PREDICTIVE_COLUMNS = [  # NOTE: if we used this features they will leak the 
     "CANCELLATION_REASON",  # Cancellation reason is only filled if it was cancelled
 ]
 
+HIGH_CARDINALITY_ROUTE_COLUMNS = [
+    "ORIGIN_AIRPORT",
+    "DESTINATION_AIRPORT",
+    "AIRLINE",
+]
+
 
 def split_dataset(
     df: pd.DataFrame,
@@ -57,7 +63,7 @@ def build_feature_matrices(
     test_df: pd.DataFrame,
     target_column: str = TARGET_COLUMN,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Separate labels, encode categoricals, and align train/test feature columns."""
+    """Separate labels and apply train-only frequency encoding."""
 
     y_train = train_df[[target_column]].copy()
     y_test = test_df[[target_column]].copy()
@@ -65,23 +71,25 @@ def build_feature_matrices(
     train_features = train_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
     test_features = test_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
 
-    # NOTE: this gets the categorical columns
-    categorical_columns = train_features.select_dtypes(
-        include=["object", "category"]
-    ).columns.tolist()
+    route_columns = [
+        col
+        for col in HIGH_CARDINALITY_ROUTE_COLUMNS
+        if col in train_features.columns and col in test_features.columns
+    ]
 
-    # NOTE: we train the encoding on the training set only and then apply to the test
-    # TODO: change to another encoding can be better for high cardinality (left for now we will see)
-    train_encoded = pd.get_dummies(
-        train_features, columns=categorical_columns, dtype=int
-    )
-    test_encoded = pd.get_dummies(test_features, columns=categorical_columns, dtype=int)
+    for column in route_columns:
+        # NOTE: we calculate the frequency map on the training data to avoid leakage
+        frequency_map = train_features[column].value_counts(normalize=True)
+        train_features[f"{column}_freq"] = train_features[column].map(frequency_map)
+        test_features[f"{column}_freq"] = (
+            test_features[column].map(frequency_map).fillna(0.0)
+        )
 
-    # NOTE: The test matrix must follow the exact training column contract
-    # NOTE: any value not in the train set and in the test set will be set to 0
-    test_encoded = test_encoded.reindex(columns=train_encoded.columns, fill_value=0)
+    if route_columns:
+        train_features = train_features.drop(columns=route_columns)
+        test_features = test_features.drop(columns=route_columns)
 
-    return train_encoded, y_train, test_encoded, y_test
+    return train_features, y_train, test_features, y_test
 
 
 def save_feature_artifacts(
