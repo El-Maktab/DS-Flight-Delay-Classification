@@ -28,6 +28,8 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
+# NOTE: StratifiedKFold is a cross validation technique that preserves the class distribution
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 import typer
@@ -105,6 +107,31 @@ def train_random_forest_model(
     )
     model.fit(X_train, y_train)
     return model
+
+
+def evaluate_cv_scores(
+    model: Pipeline | RandomForestClassifier,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+) -> dict[str, float]:
+    # NOTE: between 2 and 5
+    n_splits = max(2, min(5, len(X_train) // max(y_train.nunique(), 2)))
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    scoring = {
+        "accuracy": "accuracy",
+        "balanced_accuracy": "balanced_accuracy",
+        "f1_macro": "f1_macro",
+        "f1_weighted": "f1_weighted",
+    }
+    cv_results = cross_validate(
+        model, X_train, y_train, cv=skf, scoring=scoring, return_train_score=False
+    )
+    return {
+        "cv_accuracy": cv_results["test_accuracy"].mean(),
+        "cv_balanced_accuracy": cv_results["test_balanced_accuracy"].mean(),
+        "cv_f1_macro": cv_results["test_f1_macro"].mean(),
+        "cv_f1_weighted": cv_results["test_f1_weighted"].mean(),
+    }
 
 
 def build_evaluation_outputs(
@@ -188,16 +215,19 @@ def train_and_log_model(
 
     model: Any | None = None
     class_weight: str | None = None
+    cv_scores: dict[str, float] = {}
     if model_mode == "logreg_balanced":
         class_weight = "balanced"
         model = train_logistic_model(
             X_train, y_train, max_iter, random_state, class_weight=class_weight
         )
+        cv_scores = evaluate_cv_scores(model, X_train, y_train)
         y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
     elif model_mode == "logreg_unbalanced":
         model = train_logistic_model(
             X_train, y_train, max_iter, random_state, class_weight=None
         )
+        cv_scores = evaluate_cv_scores(model, X_train, y_train)
         y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
     elif model_mode == "random_forest":
         model = train_random_forest_model(
@@ -209,6 +239,7 @@ def train_and_log_model(
             min_samples_leaf=rf_min_samples_leaf,
             max_depth=rf_max_depth,
         )
+        cv_scores = evaluate_cv_scores(model, X_train, y_train)
         y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
     else:
         majority_class = y_train.value_counts().idxmax()
@@ -279,6 +310,7 @@ def train_and_log_model(
         )
         mlflow.log_metrics(metrics)
         mlflow.log_metrics(cost_metrics)
+        mlflow.log_metrics(cv_scores)
         if model is not None:
             mlflow.sklearn.log_model(
                 sk_model=model,
