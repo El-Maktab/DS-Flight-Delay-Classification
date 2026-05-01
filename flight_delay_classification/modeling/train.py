@@ -19,8 +19,7 @@ import pandas as pd
 from loguru import logger
 from mlflow import MlflowClient
 from mlflow.models import infer_signature
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -28,10 +27,9 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
+
 # NOTE: StratifiedKFold is a cross validation technique that preserves the class distribution
 from sklearn.model_selection import StratifiedKFold, cross_validate
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 import typer
 
 from flight_delay_classification.config import (
@@ -42,6 +40,10 @@ from flight_delay_classification.config import (
 )
 from flight_delay_classification.evaluation.evaluate import evaluate_predictions
 from flight_delay_classification.features import apply_smote
+from flight_delay_classification.modeling.registry import (
+    ModelTrainingRequest,
+    train_model_for_mode,
+)
 
 app = typer.Typer()
 
@@ -50,68 +52,14 @@ CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
 DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline-better-eval"
 MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
 RANDOM_STATE = 42
-MODEL_MODES = (
-    "logreg_balanced",
-    "logreg_unbalanced",
-    "majority_baseline",
-    "random_forest",
-)
 
 
 def read_labels(labels_path: Path) -> pd.Series:
     return pd.read_csv(labels_path)[TARGET_COLUMN]
 
 
-def train_logistic_model(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    max_iter: int,
-    random_state: int,
-    class_weight: str | None,
-) -> Pipeline:
-    model = Pipeline(
-        steps=[
-            (
-                "scaler",
-                StandardScaler(),
-            ),  # NOTE: scaling is important for logistic regression
-            (
-                "classifier",
-                LogisticRegression(
-                    class_weight=class_weight,  # NOTE: "balanced" is important for class imbalance (it tells the model to focus on minority classes)
-                    max_iter=max_iter,
-                    random_state=random_state,
-                ),
-            ),
-        ]
-    )
-    model.fit(X_train, y_train)
-    return model
-
-
-def train_random_forest_model(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    random_state: int,
-    n_estimators: int,
-    class_weight: str | None,
-    min_samples_leaf: int,
-    max_depth: int | None,
-) -> RandomForestClassifier:
-    model = RandomForestClassifier(
-        n_estimators=n_estimators,
-        class_weight=class_weight,  # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
-        min_samples_leaf=min_samples_leaf,
-        max_depth=max_depth,
-        random_state=random_state,
-        n_jobs=-1,
-    )
-    model.fit(X_train, y_train)
-    return model
-
-
 def evaluate_cv_scores(
-    model: Pipeline | RandomForestClassifier,
+    model: BaseEstimator,
     X_train: pd.DataFrame,
     y_train: pd.Series,
 ) -> dict[str, float]:
@@ -205,11 +153,6 @@ def train_and_log_model(
     rf_max_depth: int | None = 25,
     random_state: int = RANDOM_STATE,
 ) -> dict[str, Any]:
-    if model_mode not in MODEL_MODES:
-        raise ValueError(
-            f"Invalid model_mode '{model_mode}'. Use one of: {MODEL_MODES}"
-        )
-
     X_train = pd.read_csv(features_path)
     y_train = read_labels(labels_path)
     X_test = pd.read_csv(test_features_path)
@@ -218,37 +161,24 @@ def train_and_log_model(
     if use_smote:
         X_train, y_train = apply_smote(X_train, y_train, random_state)
 
-    model: Any | None = None
-    class_weight: str | None = None
-    cv_scores: dict[str, float] = {}
-    if model_mode == "logreg_balanced":
-        class_weight = "balanced"
-        model = train_logistic_model(
-            X_train, y_train, max_iter, random_state, class_weight=class_weight
-        )
-        cv_scores = evaluate_cv_scores(model, X_train, y_train)
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    elif model_mode == "logreg_unbalanced":
-        model = train_logistic_model(
-            X_train, y_train, max_iter, random_state, class_weight=None
-        )
-        cv_scores = evaluate_cv_scores(model, X_train, y_train)
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    elif model_mode == "random_forest":
-        model = train_random_forest_model(
-            X_train,
-            y_train,
+    training_result = train_model_for_mode(
+        model_mode,
+        ModelTrainingRequest(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            max_iter=max_iter,
+            rf_n_estimators=rf_n_estimators,
+            rf_class_weight=rf_class_weight,
+            rf_min_samples_leaf=rf_min_samples_leaf,
+            rf_max_depth=rf_max_depth,
             random_state=random_state,
-            n_estimators=rf_n_estimators,
-            class_weight=rf_class_weight,
-            min_samples_leaf=rf_min_samples_leaf,
-            max_depth=rf_max_depth,
-        )
-        cv_scores = evaluate_cv_scores(model, X_train, y_train)
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    else:
-        majority_class = y_train.value_counts().idxmax()
-        y_pred = pd.Series([majority_class] * len(y_test), name=TARGET_COLUMN)
+        ),
+    )
+    model = training_result.model
+    class_weight = training_result.class_weight
+    y_pred = training_result.y_pred
+    cv_scores = evaluate_cv_scores(model, X_train, y_train) if model is not None else {}
 
     evaluation_report = evaluate_predictions(
         y_true=y_test,
@@ -277,32 +207,14 @@ def train_and_log_model(
         mlflow.set_tags(
             {
                 "stage": "baseline_training",
-                "model_family": (
-                    "majority_baseline"
-                    if model_mode == "majority_baseline"
-                    else (
-                        "random_forest"
-                        if model_mode == "random_forest"
-                        else "logistic_regression"
-                    )
-                ),
+                "model_family": training_result.model_family,
             }
         )
         mlflow.log_params(
             {
                 "model_mode": model_mode,
-                "algorithm": (
-                    "majority_baseline"
-                    if model_mode == "majority_baseline"
-                    else (
-                        "RandomForestClassifier"
-                        if model_mode == "random_forest"
-                        else "LogisticRegression"
-                    )
-                ),
-                "preprocessing": (
-                    "StandardScaler" if model_mode.startswith("logreg") else "none"
-                ),
+                "algorithm": training_result.algorithm,
+                "preprocessing": training_result.preprocessing,
                 "use_smote": use_smote,
                 "class_weight": class_weight,
                 "max_iter": max_iter,

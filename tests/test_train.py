@@ -10,7 +10,17 @@ Description:
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
+from flight_delay_classification.modeling.registry import (
+    MODEL_MODES,
+    ModelTrainingRequest,
+    train_model_for_mode,
+)
+from flight_delay_classification.modeling.run_all_models import (
+    build_run_name,
+    run_all_models,
+)
 from flight_delay_classification.modeling.train import (
     build_evaluation_outputs,
     train_and_log_model,
@@ -114,3 +124,99 @@ def test_train_and_log_model_saves_model_and_mlfow_run(tmp_path: Path) -> None:
     assert summary["metrics"]["macro_f1"] >= 0.0
     assert tracking_db_path.exists()
     assert (tmp_path / "mlartifacts").exists()
+
+
+def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
+    X_train = pd.DataFrame({"feature_a": [0.0, 1.0, 2.0], "feature_b": [0.0, 1.0, 2.0]})
+    y_train = pd.Series(["on_time", "on_time", "minor_delay"])
+    X_test = pd.DataFrame({"feature_a": [3.0, 4.0], "feature_b": [3.0, 4.0]})
+
+    result = train_model_for_mode(
+        "majority_baseline",
+        ModelTrainingRequest(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            max_iter=100,
+            rf_n_estimators=10,
+            rf_class_weight="balanced_subsample",
+            rf_min_samples_leaf=1,
+            rf_max_depth=3,
+            random_state=42,
+        ),
+    )
+
+    assert "majority_baseline" in MODEL_MODES
+    assert result.model is None
+    assert result.algorithm == "majority_baseline"
+    assert result.y_pred.tolist() == ["on_time", "on_time"]
+
+
+def test_train_model_for_mode_rejects_unknown_mode() -> None:
+    request = ModelTrainingRequest(
+        X_train=pd.DataFrame({"feature_a": [0.0], "feature_b": [0.0]}),
+        y_train=pd.Series(["on_time"]),
+        X_test=pd.DataFrame({"feature_a": [1.0], "feature_b": [1.0]}),
+        max_iter=100,
+        rf_n_estimators=10,
+        rf_class_weight="balanced_subsample",
+        rf_min_samples_leaf=1,
+        rf_max_depth=3,
+        random_state=42,
+    )
+
+    with pytest.raises(ValueError, match="Invalid model_mode"):
+        train_model_for_mode("does_not_exist", request)
+
+
+def test_build_run_name_appends_model_descriptor() -> None:
+    assert (
+        build_run_name("feature-refresh", "random_forest", use_smote=False)
+        == "feature-refresh-random_forest"
+    )
+    assert (
+        build_run_name("feature-refresh", "random_forest", use_smote=True)
+        == "feature-refresh-random_forest-smote"
+    )
+
+
+def test_run_all_models_runs_each_registered_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    features_path, labels_path, test_features_path, test_labels_path = (
+        write_modeling_artifacts(tmp_path)
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_train_and_log_model(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "model_path": str(kwargs["model_path"]),
+            "run_id": f"run-{kwargs['model_mode']}",
+            "tracking_uri": kwargs["tracking_uri"],
+            "metrics": {"macro_f1": 0.5},
+            "class_order": ["on_time"],
+        }
+
+    monkeypatch.setattr(
+        "flight_delay_classification.modeling.run_all_models.train_and_log_model",
+        fake_train_and_log_model,
+    )
+
+    summaries = run_all_models(
+        experiment_name="exp-123",
+        run_prefix="feature-refresh",
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+        tracking_uri="sqlite:///tmp.db",
+    )
+
+    assert [call["model_mode"] for call in calls] == list(MODEL_MODES)
+    assert [summary["model_mode"] for summary in summaries] == list(MODEL_MODES)
+    assert [summary["run_name"] for summary in summaries] == [
+        build_run_name("feature-refresh", model_mode, use_smote=False)
+        for model_mode in MODEL_MODES
+    ]
