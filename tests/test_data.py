@@ -19,16 +19,28 @@ from flight_delay_classification.features import (
 
 EXPECTED_HISTORICAL_COLUMNS = [
     "airline_historical_delay_rate",
+    "airline_historical_on_time_rate",
+    "airline_historical_minor_delay_rate",
     "airline_historical_severe_rate",
+    "airline_historical_major_delay_rate",
     "airline_historical_cancelled_rate",
     "origin_airport_historical_delay_rate",
+    "origin_airport_historical_on_time_rate",
+    "origin_airport_historical_minor_delay_rate",
     "origin_airport_historical_severe_rate",
+    "origin_airport_historical_major_delay_rate",
     "origin_airport_historical_cancelled_rate",
     "destination_airport_historical_delay_rate",
+    "destination_airport_historical_on_time_rate",
+    "destination_airport_historical_minor_delay_rate",
     "destination_airport_historical_severe_rate",
+    "destination_airport_historical_major_delay_rate",
     "destination_airport_historical_cancelled_rate",
     "route_historical_delay_rate",
+    "route_historical_on_time_rate",
+    "route_historical_minor_delay_rate",
     "route_historical_severe_rate",
+    "route_historical_major_delay_rate",
     "route_historical_cancelled_rate",
 ]
 
@@ -73,6 +85,10 @@ def test_build_feature_matrices_aligns_test_columns() -> None:
         assert column in train_features.columns
         assert column in test_features.columns
     assert test_features[EXPECTED_HISTORICAL_COLUMNS].notna().all().all()
+    assert test_features.loc[0, "airline_historical_on_time_rate"] == 0.5
+    assert test_features.loc[0, "airline_historical_minor_delay_rate"] == 0.5
+    assert test_features.loc[0, "airline_historical_major_delay_rate"] == 0.0
+    assert test_features.loc[0, "route_historical_cancelled_rate"] == 0.0
     assert train_labels.columns.tolist() == ["DELAY_CATEGORY"]
     assert test_labels.columns.tolist() == ["DELAY_CATEGORY"]
 

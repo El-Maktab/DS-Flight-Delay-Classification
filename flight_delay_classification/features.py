@@ -96,11 +96,14 @@ def add_smoothed_historical_rate_features(
     then applies the learned rates to both train and test features
     it computes three binary target rates:
     """
-    # NOTE: those binary targets keep the encoding dense without expanding into one column per class.
+    # NOTE: those binary targets keep the encoding dense without one-hot expanding the categories.
     train_targets = pd.DataFrame(
         {
             "historical_delay_rate": (y_train != "on_time").astype(float),
+            "historical_on_time_rate": (y_train == "on_time").astype(float),
+            "historical_minor_delay_rate": (y_train == "minor_delay").astype(float),
             "historical_severe_rate": (y_train == "major_delay").astype(float),
+            "historical_major_delay_rate": (y_train == "major_delay").astype(float),
             "historical_cancelled_rate": (y_train == "cancelled").astype(float),
         }
     )
