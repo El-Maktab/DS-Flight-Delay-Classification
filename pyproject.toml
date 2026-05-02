@@ -29,6 +29,7 @@ loguru = "*"
 tqdm = "*"
 typer = "*"
 mlflow = "^3.11.1"
+xgboost = "^3.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1"

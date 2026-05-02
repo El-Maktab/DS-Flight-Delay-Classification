@@ -11,8 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     HistGradientBoostingClassifier,
@@ -21,8 +22,9 @@ from sklearn.ensemble import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
+from xgboost import XGBClassifier
 
 TARGET_COLUMN = "DELAY_CATEGORY"
 
@@ -87,12 +89,12 @@ def train_random_forest_model(
     max_depth: int | None,
 ) -> RandomForestClassifier:
     model = RandomForestClassifier(
-        n_estimators=n_estimators,
-        class_weight=class_weight,  # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
-        min_samples_leaf=min_samples_leaf,
-        max_depth=max_depth,
+        n_estimators=n_estimators,  # NOTE: number of trees in the forest
+        class_weight=class_weight,
+        min_samples_leaf=min_samples_leaf,  # NOTE: stops leaves from becoming too small
+        max_depth=max_depth,  # NOTE: limits how deep each tree can grow
         random_state=random_state,
-        n_jobs=-1,
+        n_jobs=-1,  # NOTE: uses all CPU cores
     )
     model.fit(X_train, y_train)
     return model
@@ -124,10 +126,10 @@ def train_extra_trees_model(
     max_depth: int | None,
 ) -> ExtraTreesClassifier:
     model = ExtraTreesClassifier(
-        n_estimators=n_estimators,
+        n_estimators=n_estimators,  # NOTE: number of trees
         class_weight=class_weight,
-        min_samples_leaf=min_samples_leaf,
-        max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf,  # NOTE: stops leaves from becoming too small
+        max_depth=max_depth,  # NOTE: limits how deep each tree can grow
         random_state=random_state,
         n_jobs=-1,
     )
@@ -148,8 +150,11 @@ def train_mlp_model(
             (
                 "classifier",
                 MLPClassifier(
-                    hidden_layer_sizes=(128, 64),
-                    max_iter=max_iter,
+                    hidden_layer_sizes=(
+                        128,
+                        64,
+                    ),  # NOTE: two hidden layers for a small neural net
+                    max_iter=max_iter,  # NOTE: how many training passes to allow
                     random_state=random_state,
                 ),
             ),
@@ -164,6 +169,128 @@ def train_mlp_model(
         fit_kwargs["classifier__sample_weight"] = sample_weight
 
     model.fit(X_train, y_train, **fit_kwargs)
+    return model
+
+
+class XGBoostDelayClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(
+        self,
+        n_estimators: int,
+        max_depth: int | None,
+        random_state: int,
+        class_weight: str | None,
+    ) -> None:
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.random_state = random_state
+        self.class_weight = class_weight
+        self.label_encoder_: LabelEncoder | None = None
+        self.model_: XGBClassifier | None = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> XGBoostDelayClassifier:
+        self.label_encoder_ = LabelEncoder()
+        y_encoded = self.label_encoder_.fit_transform(y)
+        sample_weight = None
+        if self.class_weight is not None:
+            sample_weight = compute_sample_weight(
+                class_weight=self.class_weight,
+                y=y,
+            )
+
+        self.model_ = XGBClassifier(
+            objective="multi:softprob",  # NOTE: predicts class probabilities for all delay classes
+            num_class=len(
+                self.label_encoder_.classes_
+            ),  # NOTE: tells XGBoost how many labels exist
+            n_estimators=self.n_estimators,  # NOTE: number of boosting trees
+            max_depth=self.max_depth or 6,  # NOTE: limits how deep each tree can grow
+            learning_rate=0.05,  # NOTE: smaller steps usually make boosting steadier
+            subsample=0.9,  # NOTE: trains each round on most row
+            colsample_bytree=0.9,  # NOTE: trains each tree on most, not all
+            tree_method="hist",  # NOTE: uses the fast histogram tree builder
+            eval_metric="mlogloss",  # NOTE: measures multiclass probability error while training
+            random_state=self.random_state,
+            n_jobs=-1,
+        )
+        self.model_.fit(X, y_encoded, sample_weight=sample_weight, verbose=False)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        y_pred = self.model_.predict(X)
+        return self.label_encoder_.inverse_transform(y_pred.astype(int))
+
+
+class HierarchicalDelayClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(
+        self,
+        max_iter: int,
+        random_state: int,
+        class_weight: str | dict[str, float] | None,
+    ) -> None:
+        self.max_iter = max_iter
+        self.random_state = random_state
+        self.class_weight = class_weight
+        self.stage_one_model_: HistGradientBoostingClassifier | None = None
+        self.stage_two_model_: HistGradientBoostingClassifier | None = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> HierarchicalDelayClassifier:
+        self.stage_one_model_ = HistGradientBoostingClassifier(
+            class_weight=self.class_weight,
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+        )
+        self.stage_two_model_ = HistGradientBoostingClassifier(
+            class_weight=self.class_weight,
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+        )
+
+        delayed_mask = y != "on_time"
+        self.stage_one_model_.fit(X, delayed_mask)
+        self.stage_two_model_.fit(X.loc[delayed_mask], y.loc[delayed_mask])
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        delayed_pred = self.stage_one_model_.predict(X).astype(bool)
+        predictions = np.full(len(X), "on_time", dtype=object)
+        if delayed_pred.any():
+            predictions[delayed_pred] = self.stage_two_model_.predict(
+                X.loc[delayed_pred]
+            )
+        return predictions
+
+
+def train_xgboost_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    random_state: int,
+    n_estimators: int,
+    class_weight: str | None,
+    max_depth: int | None,
+) -> XGBoostDelayClassifier:
+    model = XGBoostDelayClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        random_state=random_state,
+        class_weight=class_weight,
+    )
+    model.fit(X_train, y_train)
+    return model
+
+
+def train_hierarchical_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    max_iter: int,
+    random_state: int,
+    class_weight: str | dict[str, float] | None,
+) -> HierarchicalDelayClassifier:
+    model = HierarchicalDelayClassifier(
+        max_iter=max_iter,
+        random_state=random_state,
+        class_weight=class_weight,
+    )
+    model.fit(X_train, y_train)
     return model
 
 
@@ -283,6 +410,49 @@ def build_mlp_balanced(request: ModelTrainingRequest) -> ModelTrainingResult:
     )
 
 
+# NOTE: XGBoost one of the strongest standard learners
+def build_xgboost_balanced(request: ModelTrainingRequest) -> ModelTrainingResult:
+    model = train_xgboost_model(
+        request.X_train,
+        request.y_train,
+        random_state=request.random_state,
+        n_estimators=request.rf_n_estimators,
+        class_weight="balanced",
+        max_depth=request.rf_max_depth,
+    )
+    return ModelTrainingResult(
+        model=model,
+        y_pred=pd.Series(model.predict(request.X_test), name=TARGET_COLUMN),
+        class_weight="balanced",
+        model_family="xgboost",
+        algorithm="XGBClassifier",
+        preprocessing="none",
+    )
+
+
+# NOTE: A hierarchical classifier is a good future-facing option because the
+# NOTE: hardest part of this dataset is separating delayed flights from the big
+# NOTE: on_time class before splitting the minority classes from each other.
+def build_hierarchical_hist_gradient_boosting(
+    request: ModelTrainingRequest,
+) -> ModelTrainingResult:
+    model = train_hierarchical_model(
+        request.X_train,
+        request.y_train,
+        max_iter=request.max_iter,
+        random_state=request.random_state,
+        class_weight="balanced",
+    )
+    return ModelTrainingResult(
+        model=model,
+        y_pred=pd.Series(model.predict(request.X_test), name=TARGET_COLUMN),
+        class_weight="balanced",
+        model_family="hierarchical_hist_gradient_boosting",
+        algorithm="HierarchicalDelayClassifier",
+        preprocessing="none",
+    )
+
+
 def build_majority_baseline(request: ModelTrainingRequest) -> ModelTrainingResult:
     majority_class = request.y_train.value_counts().idxmax()
     return ModelTrainingResult(
@@ -302,10 +472,11 @@ MODEL_BUILDERS: dict[str, ModelTrainer] = {
     "logreg_balanced": build_logreg_balanced,
     "logreg_unbalanced": build_logreg_unbalanced,
     "hist_gradient_boosting": build_hist_gradient_boosting,
+    "hierarchical_hist_gradient_boosting": build_hierarchical_hist_gradient_boosting,
     "extra_trees": build_extra_trees,
     "majority_baseline": build_majority_baseline,
     "random_forest": build_random_forest,
-    "mlp_balanced": build_mlp_balanced,
+    "xgboost_balanced": build_xgboost_balanced,
 }
 MODEL_MODES = tuple(MODEL_BUILDERS)
 

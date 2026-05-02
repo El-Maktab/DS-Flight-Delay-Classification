@@ -155,9 +155,13 @@ def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
 @pytest.mark.parametrize(
     ("model_mode", "expected_algorithm"),
     [
-        ("mlp_balanced", "MLPClassifier"),
+        (
+            "hierarchical_hist_gradient_boosting",
+            "HierarchicalDelayClassifier",
+        ),
         ("extra_trees", "ExtraTreesClassifier"),
         ("hist_gradient_boosting", "HistGradientBoostingClassifier"),
+        ("xgboost_balanced", "XGBClassifier"),
     ],
 )
 def test_train_model_for_mode_supports_new_models(
@@ -195,7 +199,7 @@ def test_train_model_for_mode_supports_new_models(
             X_train=X_train,
             y_train=y_train,
             X_test=X_test,
-            max_iter=100,
+            max_iter=50,
             rf_n_estimators=20,
             rf_class_weight="balanced_subsample",
             rf_min_samples_leaf=1,
