@@ -72,14 +72,21 @@ def load_modeling_artifacts(
     )
 
 
+def build_cv_splitter(
+    y_train: pd.Series,
+    X_train: pd.DataFrame,
+) -> StratifiedKFold:
+    # NOTE: between 2 and 5
+    n_splits = max(2, min(5, len(X_train) // max(y_train.nunique(), 2)))
+    return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+
+
 def evaluate_cv_scores(
     model: BaseEstimator,
     X_train: pd.DataFrame,
     y_train: pd.Series,
 ) -> dict[str, float]:
-    # NOTE: between 2 and 5
-    n_splits = max(2, min(5, len(X_train) // max(y_train.nunique(), 2)))
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    skf = build_cv_splitter(y_train, X_train)
     scoring = {
         "accuracy": "accuracy",
         "balanced_accuracy": "balanced_accuracy",
@@ -165,6 +172,11 @@ def train_and_log_model(
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    hgb_learning_rate: float = 0.1,
+    hgb_max_leaf_nodes: int = 31,
+    hgb_min_samples_leaf: int = 20,
+    hgb_l2_regularization: float = 0.0,
+    hgb_max_depth: int | None = None,
     random_state: int = RANDOM_STATE,
     X_train: pd.DataFrame | None = None,
     y_train: pd.Series | None = None,
@@ -198,6 +210,11 @@ def train_and_log_model(
             rf_min_samples_leaf=rf_min_samples_leaf,
             rf_max_depth=rf_max_depth,
             random_state=random_state,
+            hgb_learning_rate=hgb_learning_rate,
+            hgb_max_leaf_nodes=hgb_max_leaf_nodes,
+            hgb_min_samples_leaf=hgb_min_samples_leaf,
+            hgb_l2_regularization=hgb_l2_regularization,
+            hgb_max_depth=hgb_max_depth,
         ),
     )
     model = training_result.model
@@ -247,6 +264,11 @@ def train_and_log_model(
                 "rf_class_weight": rf_class_weight,
                 "rf_min_samples_leaf": rf_min_samples_leaf,
                 "rf_max_depth": rf_max_depth,
+                "hgb_learning_rate": hgb_learning_rate,
+                "hgb_max_leaf_nodes": hgb_max_leaf_nodes,
+                "hgb_min_samples_leaf": hgb_min_samples_leaf,
+                "hgb_l2_regularization": hgb_l2_regularization,
+                "hgb_max_depth": hgb_max_depth,
                 "train_rows": len(X_train),
                 "feature_columns": len(X_train.columns),
             }
@@ -298,6 +320,11 @@ def main(
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    hgb_learning_rate: float = 0.1,
+    hgb_max_leaf_nodes: int = 31,
+    hgb_min_samples_leaf: int = 20,
+    hgb_l2_regularization: float = 0.0,
+    hgb_max_depth: int | None = None,
     random_state: int = RANDOM_STATE,
 ) -> None:
     summary = train_and_log_model(
@@ -318,6 +345,11 @@ def main(
         rf_class_weight=rf_class_weight,
         rf_min_samples_leaf=rf_min_samples_leaf,
         rf_max_depth=rf_max_depth,
+        hgb_learning_rate=hgb_learning_rate,
+        hgb_max_leaf_nodes=hgb_max_leaf_nodes,
+        hgb_min_samples_leaf=hgb_min_samples_leaf,
+        hgb_l2_regularization=hgb_l2_regularization,
+        hgb_max_depth=hgb_max_depth,
         random_state=random_state,
     )
 

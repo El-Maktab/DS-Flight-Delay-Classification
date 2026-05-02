@@ -40,6 +40,11 @@ class ModelTrainingRequest:
     rf_min_samples_leaf: int
     rf_max_depth: int | None
     random_state: int
+    hgb_learning_rate: float = 0.1
+    hgb_max_leaf_nodes: int = 31
+    hgb_min_samples_leaf: int = 20
+    hgb_l2_regularization: float = 0.0
+    hgb_max_depth: int | None = None
 
 
 @dataclass(frozen=True)
@@ -88,7 +93,26 @@ def train_random_forest_model(
     min_samples_leaf: int,
     max_depth: int | None,
 ) -> RandomForestClassifier:
-    model = RandomForestClassifier(
+    model = build_random_forest_estimator(
+        n_estimators=n_estimators,  # NOTE: number of trees in the forest
+        random_state=random_state,
+        class_weight=class_weight,
+        min_samples_leaf=min_samples_leaf,
+        max_depth=max_depth,
+    )
+    model.fit(X_train, y_train)
+    return model
+
+
+def build_random_forest_estimator(
+    *,
+    random_state: int,
+    n_estimators: int,
+    class_weight: str | None,
+    min_samples_leaf: int,
+    max_depth: int | None,
+) -> RandomForestClassifier:
+    return RandomForestClassifier(
         n_estimators=n_estimators,  # NOTE: number of trees in the forest
         class_weight=class_weight,
         min_samples_leaf=min_samples_leaf,  # NOTE: stops leaves from becoming too small
@@ -96,8 +120,29 @@ def train_random_forest_model(
         random_state=random_state,
         n_jobs=-1,  # NOTE: uses all CPU cores
     )
-    model.fit(X_train, y_train)
-    return model
+
+
+def build_hist_gradient_boosting_estimator(
+    *,
+    max_iter: int,
+    random_state: int,
+    class_weight: str | dict[str, float] | None,
+    learning_rate: float,
+    max_leaf_nodes: int,
+    min_samples_leaf: int,
+    l2_regularization: float,
+    max_depth: int | None,
+) -> HistGradientBoostingClassifier:
+    return HistGradientBoostingClassifier(
+        class_weight=class_weight,
+        learning_rate=learning_rate,
+        max_depth=max_depth,
+        max_iter=max_iter,
+        max_leaf_nodes=max_leaf_nodes,
+        min_samples_leaf=min_samples_leaf,
+        l2_regularization=l2_regularization,
+        random_state=random_state,
+    )
 
 
 def train_hist_gradient_boosting_model(
@@ -106,10 +151,20 @@ def train_hist_gradient_boosting_model(
     max_iter: int,
     random_state: int,
     class_weight: str | dict[str, float] | None,
+    learning_rate: float,
+    max_leaf_nodes: int,
+    min_samples_leaf: int,
+    l2_regularization: float,
+    max_depth: int | None,
 ) -> HistGradientBoostingClassifier:
-    model = HistGradientBoostingClassifier(
+    model = build_hist_gradient_boosting_estimator(
         class_weight=class_weight,
+        learning_rate=learning_rate,
+        max_depth=max_depth,
         max_iter=max_iter,
+        max_leaf_nodes=max_leaf_nodes,
+        min_samples_leaf=min_samples_leaf,
+        l2_regularization=l2_regularization,
         random_state=random_state,
     )
     model.fit(X_train, y_train)
@@ -226,22 +281,42 @@ class HierarchicalDelayClassifier(BaseEstimator, ClassifierMixin):
         max_iter: int,
         random_state: int,
         class_weight: str | dict[str, float] | None,
+        learning_rate: float,
+        max_leaf_nodes: int,
+        min_samples_leaf: int,
+        l2_regularization: float,
+        max_depth: int | None,
     ) -> None:
         self.max_iter = max_iter
         self.random_state = random_state
         self.class_weight = class_weight
+        self.learning_rate = learning_rate
+        self.max_leaf_nodes = max_leaf_nodes
+        self.min_samples_leaf = min_samples_leaf
+        self.l2_regularization = l2_regularization
+        self.max_depth = max_depth
         self.stage_one_model_: HistGradientBoostingClassifier | None = None
         self.stage_two_model_: HistGradientBoostingClassifier | None = None
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> HierarchicalDelayClassifier:
-        self.stage_one_model_ = HistGradientBoostingClassifier(
+        self.stage_one_model_ = build_hist_gradient_boosting_estimator(
             class_weight=self.class_weight,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
             max_iter=self.max_iter,
+            max_leaf_nodes=self.max_leaf_nodes,
+            min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization,
             random_state=self.random_state,
         )
-        self.stage_two_model_ = HistGradientBoostingClassifier(
+        self.stage_two_model_ = build_hist_gradient_boosting_estimator(
             class_weight=self.class_weight,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
             max_iter=self.max_iter,
+            max_leaf_nodes=self.max_leaf_nodes,
+            min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization,
             random_state=self.random_state,
         )
 
@@ -284,14 +359,47 @@ def train_hierarchical_model(
     max_iter: int,
     random_state: int,
     class_weight: str | dict[str, float] | None,
+    learning_rate: float,
+    max_leaf_nodes: int,
+    min_samples_leaf: int,
+    l2_regularization: float,
+    max_depth: int | None,
 ) -> HierarchicalDelayClassifier:
-    model = HierarchicalDelayClassifier(
+    model = build_hierarchical_hist_gradient_boosting_estimator(
         max_iter=max_iter,
         random_state=random_state,
         class_weight=class_weight,
+        learning_rate=learning_rate,
+        max_leaf_nodes=max_leaf_nodes,
+        min_samples_leaf=min_samples_leaf,
+        l2_regularization=l2_regularization,
+        max_depth=max_depth,
     )
     model.fit(X_train, y_train)
     return model
+
+
+def build_hierarchical_hist_gradient_boosting_estimator(
+    *,
+    max_iter: int,
+    random_state: int,
+    class_weight: str | dict[str, float] | None,
+    learning_rate: float,
+    max_leaf_nodes: int,
+    min_samples_leaf: int,
+    l2_regularization: float,
+    max_depth: int | None,
+) -> HierarchicalDelayClassifier:
+    return HierarchicalDelayClassifier(
+        max_iter=max_iter,
+        random_state=random_state,
+        class_weight=class_weight,
+        learning_rate=learning_rate,
+        max_leaf_nodes=max_leaf_nodes,
+        min_samples_leaf=min_samples_leaf,
+        l2_regularization=l2_regularization,
+        max_depth=max_depth,
+    )
 
 
 def build_logreg_balanced(request: ModelTrainingRequest) -> ModelTrainingResult:
@@ -359,6 +467,11 @@ def build_hist_gradient_boosting(request: ModelTrainingRequest) -> ModelTraining
         max_iter=request.max_iter,
         random_state=request.random_state,
         class_weight="balanced",
+        learning_rate=request.hgb_learning_rate,
+        max_leaf_nodes=request.hgb_max_leaf_nodes,
+        min_samples_leaf=request.hgb_min_samples_leaf,
+        l2_regularization=request.hgb_l2_regularization,
+        max_depth=request.hgb_max_depth,
     )
     return ModelTrainingResult(
         model=model,
@@ -442,6 +555,11 @@ def build_hierarchical_hist_gradient_boosting(
         max_iter=request.max_iter,
         random_state=request.random_state,
         class_weight="balanced",
+        learning_rate=request.hgb_learning_rate,
+        max_leaf_nodes=request.hgb_max_leaf_nodes,
+        min_samples_leaf=request.hgb_min_samples_leaf,
+        l2_regularization=request.hgb_l2_regularization,
+        max_depth=request.hgb_max_depth,
     )
     return ModelTrainingResult(
         model=model,
