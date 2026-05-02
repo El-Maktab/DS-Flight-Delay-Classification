@@ -152,6 +152,64 @@ def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
     assert result.y_pred.tolist() == ["on_time", "on_time"]
 
 
+@pytest.mark.parametrize(
+    ("model_mode", "expected_algorithm"),
+    [
+        ("mlp_balanced", "MLPClassifier"),
+        ("extra_trees", "ExtraTreesClassifier"),
+        ("hist_gradient_boosting", "HistGradientBoostingClassifier"),
+    ],
+)
+def test_train_model_for_mode_supports_new_models(
+    model_mode: str,
+    expected_algorithm: str,
+) -> None:
+    X_train = pd.DataFrame(
+        {
+            "feature_a": [0.0, 0.1, 5.0, 5.1, 10.0, 10.1, 15.0, 15.1],
+            "feature_b": [0.0, 0.2, 5.0, 5.2, 10.0, 10.2, 15.0, 15.2],
+        }
+    )
+    y_train = pd.Series(
+        [
+            "on_time",
+            "on_time",
+            "minor_delay",
+            "minor_delay",
+            "major_delay",
+            "major_delay",
+            "cancelled",
+            "cancelled",
+        ]
+    )
+    X_test = pd.DataFrame(
+        {
+            "feature_a": [0.05, 5.05, 10.05, 15.05],
+            "feature_b": [0.1, 5.1, 10.1, 15.1],
+        }
+    )
+
+    result = train_model_for_mode(
+        model_mode,
+        ModelTrainingRequest(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            max_iter=100,
+            rf_n_estimators=20,
+            rf_class_weight="balanced_subsample",
+            rf_min_samples_leaf=1,
+            rf_max_depth=3,
+            random_state=42,
+        ),
+    )
+
+    assert model_mode in MODEL_MODES
+    assert result.model is not None
+    assert result.algorithm == expected_algorithm
+    assert len(result.y_pred) == len(X_test)
+
+
 def test_train_model_for_mode_rejects_unknown_mode() -> None:
     request = ModelTrainingRequest(
         X_train=pd.DataFrame({"feature_a": [0.0], "feature_b": [0.0]}),
@@ -220,3 +278,72 @@ def test_run_all_models_runs_each_registered_mode(
         build_run_name("feature-refresh", model_mode, use_smote=False)
         for model_mode in MODEL_MODES
     ]
+
+
+def test_run_all_models_applies_smote_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    features_path, labels_path, test_features_path, test_labels_path = (
+        write_modeling_artifacts(tmp_path)
+    )
+    smote_calls = 0
+    train_calls: list[dict[str, object]] = []
+
+    def fake_load_modeling_artifacts(
+        **_: object,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+        return (
+            pd.read_csv(features_path),
+            pd.read_csv(labels_path)["DELAY_CATEGORY"],
+            pd.read_csv(test_features_path),
+            pd.read_csv(test_labels_path)["DELAY_CATEGORY"],
+        )
+
+    def fake_apply_smote(
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        random_state: int,
+    ) -> tuple[pd.DataFrame, pd.Series]:
+        nonlocal smote_calls
+        assert random_state == 42
+        smote_calls += 1
+        return X_train.assign(smote_marker=1.0), y_train
+
+    def fake_train_and_log_model(**kwargs: object) -> dict[str, object]:
+        train_calls.append(kwargs)
+        return {
+            "model_path": str(kwargs["model_path"]),
+            "run_id": f"run-{kwargs['model_mode']}",
+            "tracking_uri": kwargs["tracking_uri"],
+            "metrics": {"macro_f1": 0.5},
+            "class_order": ["on_time"],
+        }
+
+    monkeypatch.setattr(
+        "flight_delay_classification.modeling.run_all_models.load_modeling_artifacts",
+        fake_load_modeling_artifacts,
+    )
+    monkeypatch.setattr(
+        "flight_delay_classification.modeling.run_all_models.apply_smote",
+        fake_apply_smote,
+    )
+    monkeypatch.setattr(
+        "flight_delay_classification.modeling.run_all_models.train_and_log_model",
+        fake_train_and_log_model,
+    )
+
+    run_all_models(
+        experiment_name="exp-123",
+        run_prefix="feature-refresh",
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+        tracking_uri="sqlite:///tmp.db",
+        use_smote=True,
+    )
+
+    assert smote_calls == 1
+    assert len(train_calls) == len(MODEL_MODES)
+    assert all("smote_marker" in call["X_train"].columns for call in train_calls)

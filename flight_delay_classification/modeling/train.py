@@ -58,6 +58,20 @@ def read_labels(labels_path: Path) -> pd.Series:
     return pd.read_csv(labels_path)[TARGET_COLUMN]
 
 
+def load_modeling_artifacts(
+    features_path: Path,
+    labels_path: Path,
+    test_features_path: Path,
+    test_labels_path: Path,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    return (
+        pd.read_csv(features_path),
+        read_labels(labels_path),
+        pd.read_csv(test_features_path),
+        read_labels(test_labels_path),
+    )
+
+
 def evaluate_cv_scores(
     model: BaseEstimator,
     X_train: pd.DataFrame,
@@ -152,13 +166,24 @@ def train_and_log_model(
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
     random_state: int = RANDOM_STATE,
+    X_train: pd.DataFrame | None = None,
+    y_train: pd.Series | None = None,
+    X_test: pd.DataFrame | None = None,
+    y_test: pd.Series | None = None,
 ) -> dict[str, Any]:
-    X_train = pd.read_csv(features_path)
-    y_train = read_labels(labels_path)
-    X_test = pd.read_csv(test_features_path)
-    y_test = read_labels(test_labels_path)
+    using_preloaded_data = not (
+        X_train is None or y_train is None or X_test is None or y_test is None
+    )
 
-    if use_smote:
+    if not using_preloaded_data:
+        X_train, y_train, X_test, y_test = load_modeling_artifacts(
+            features_path=features_path,
+            labels_path=labels_path,
+            test_features_path=test_features_path,
+            test_labels_path=test_labels_path,
+        )
+
+    if use_smote and not using_preloaded_data:
         X_train, y_train = apply_smote(X_train, y_train, random_state)
 
     training_result = train_model_for_mode(

@@ -20,10 +20,12 @@ from flight_delay_classification.config import (
     PROCESSED_DATA_DIR,
     REPORTS_DIR,
 )
+from flight_delay_classification.features import apply_smote
 from flight_delay_classification.modeling.registry import MODEL_MODES
 from flight_delay_classification.modeling.train import (
     DEFAULT_EXPERIMENT_NAME,
     RANDOM_STATE,
+    load_modeling_artifacts,
     train_and_log_model,
 )
 
@@ -67,6 +69,15 @@ def run_all_models(
     summaries: list[dict[str, Any]] = []
     model_output_dir = MODELS_DIR / "batch_runs"
     evaluation_output_dir = REPORTS_DIR / "evaluation" / "batch_runs"
+    X_train, y_train, X_test, y_test = load_modeling_artifacts(
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+    )
+
+    if use_smote:
+        X_train, y_train = apply_smote(X_train, y_train, random_state)
 
     for model_mode in MODEL_MODES:
         artifact_stem = build_artifact_stem(run_prefix, model_mode, use_smote)
@@ -90,6 +101,10 @@ def run_all_models(
             rf_min_samples_leaf=rf_min_samples_leaf,
             rf_max_depth=rf_max_depth,
             random_state=random_state,
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            y_test=y_test,
         )
         summaries.append(
             {
