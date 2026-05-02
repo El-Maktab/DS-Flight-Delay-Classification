@@ -301,11 +301,11 @@ ModelTrainer = Callable[[ModelTrainingRequest], ModelTrainingResult]
 MODEL_BUILDERS: dict[str, ModelTrainer] = {
     "logreg_balanced": build_logreg_balanced,
     "logreg_unbalanced": build_logreg_unbalanced,
-    "mlp_balanced": build_mlp_balanced,
+    "hist_gradient_boosting": build_hist_gradient_boosting,
+    "extra_trees": build_extra_trees,
     "majority_baseline": build_majority_baseline,
     "random_forest": build_random_forest,
-    "extra_trees": build_extra_trees,
-    "hist_gradient_boosting": build_hist_gradient_boosting,
+    "mlp_balanced": build_mlp_balanced,
 }
 MODEL_MODES = tuple(MODEL_BUILDERS)
 

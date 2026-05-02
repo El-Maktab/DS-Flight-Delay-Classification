@@ -8,9 +8,11 @@ Description:
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from loguru import logger
+from pandas.tseries.holiday import USFederalHolidayCalendar
 import typer
 
 from flight_delay_classification.config import PROCESSED_DATA_DIR
@@ -39,6 +41,17 @@ HISTORICAL_ENCODING_COLUMNS = {
     "ROUTE": "route",
 }
 HISTORICAL_SMOOTHING = 25.0
+PEAK_TRAVEL_BANKS = {
+    "is_morning_peak_bank": (6, 9),
+    "is_evening_peak_bank": (16, 19),
+}
+WEATHER_INTENSITY_THRESHOLDS = {
+    "precipitation_mm": 2.0,
+    "rain_mm": 2.0,
+    "snowfall_cm": 0.0,
+    "wind_speed_kmh": 25.0,
+    "wind_gusts_kmh": 40.0,
+}
 
 
 def split_dataset(
@@ -130,18 +143,150 @@ def add_smoothed_historical_rate_features(
     return train_features, test_features
 
 
+def add_temporal_features(features: pd.DataFrame) -> pd.DataFrame:
+    departure_hour = features["SCHEDULED_DEPARTURE"] // 100
+    arrival_hour = features["SCHEDULED_ARRIVAL"] // 100
+    flight_dates = pd.to_datetime(
+        features[["YEAR", "MONTH", "DAY"]].rename(
+            columns={"YEAR": "year", "MONTH": "month", "DAY": "day"}
+        )
+    )
+    holiday_dates = USFederalHolidayCalendar().holidays(
+        start=flight_dates.min(),
+        end=flight_dates.max(),
+    )
+
+    features["is_weekend"] = features["DAY_OF_WEEK"].isin([6, 7]).astype(int)
+    features["is_holiday"] = flight_dates.isin(holiday_dates).astype(int)
+
+    # NOTE: cyclical encoding keeps midnight close to 23:00 and January close to December.
+    departure_angle = 2 * np.pi * departure_hour / 24
+    arrival_angle = 2 * np.pi * arrival_hour / 24
+    month_angle = 2 * np.pi * (features["MONTH"] - 1) / 12
+
+    features["scheduled_departure_hour_sin"] = np.sin(departure_angle)
+    features["scheduled_departure_hour_cos"] = np.cos(departure_angle)
+    features["scheduled_arrival_hour_sin"] = np.sin(arrival_angle)
+    features["scheduled_arrival_hour_cos"] = np.cos(arrival_angle)
+    features["month_sin"] = np.sin(month_angle)
+    features["month_cos"] = np.cos(month_angle)
+
+    for column_name, (start_hour, end_hour) in PEAK_TRAVEL_BANKS.items():
+        features[column_name] = departure_hour.between(start_hour, end_hour).astype(int)
+
+    return features
+
+
+def add_congestion_weather_interaction_features(
+    features: pd.DataFrame,
+) -> pd.DataFrame:
+    """builds simple airport traffic counts from scheduled departure
+    and arrival hour buckets then combines those congestion signals with small
+    origin and destination weather intensity scores so busy bad-weather 
+    stand out more clearly.
+    """
+    departure_hour = (features["SCHEDULED_DEPARTURE"] // 100).rename("departure_hour")
+    arrival_hour = (features["SCHEDULED_ARRIVAL"] // 100).rename("arrival_hour")
+
+    features["origin_hourly_departure_count"] = features.groupby(
+        ["ORIGIN_AIRPORT", "DAY_OF_WEEK", departure_hour],
+        dropna=False,
+    )["ORIGIN_AIRPORT"].transform("size")
+    features["destination_hourly_arrival_count"] = features.groupby(
+        ["DESTINATION_AIRPORT", "DAY_OF_WEEK", arrival_hour],
+        dropna=False,
+    )["DESTINATION_AIRPORT"].transform("size")
+
+    features["origin_congestion_ratio"] = features[
+        "origin_hourly_departure_count"
+    ] / features.groupby(["ORIGIN_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
+        "origin_hourly_departure_count"
+    ].transform(
+        "mean"
+    )
+    features["destination_congestion_ratio"] = features[
+        "destination_hourly_arrival_count"
+    ] / features.groupby(["DESTINATION_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
+        "destination_hourly_arrival_count"
+    ].transform(
+        "mean"
+    )
+
+    features["origin_weather_intensity"] = (
+        (
+            features["precipitation_mm"]
+            >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"]
+        )
+        | (features["rain_mm"] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
+    ).astype(float)
+    features["origin_weather_intensity"] += (
+        features["snowfall_cm"] > WEATHER_INTENSITY_THRESHOLDS["snowfall_cm"]
+    ).astype(float)
+    features["origin_weather_intensity"] += (
+        (features["wind_speed_kmh"] >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"])
+        | (features["wind_gusts_kmh"] >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"])
+    ).astype(float)
+    features["origin_weather_intensity"] += (features["temperature_c"] <= 0).astype(
+        float
+    )
+
+    features["destination_weather_intensity"] = (
+        (
+            features["dest_precipitation_mm"]
+            >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"]
+        )
+        | (features["dest_rain_mm"] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
+    ).astype(float)
+    features["destination_weather_intensity"] += (
+        features["dest_snowfall_cm"] > WEATHER_INTENSITY_THRESHOLDS["snowfall_cm"]
+    ).astype(float)
+    features["destination_weather_intensity"] += (
+        (
+            features["dest_wind_speed_kmh"]
+            >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"]
+        )
+        | (
+            features["dest_wind_gusts_kmh"]
+            >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"]
+        )
+    ).astype(float)
+    features["destination_weather_intensity"] += (
+        features["dest_temperature_c"] <= 0
+    ).astype(float)
+
+    # NOTE: we
+    features["origin_congestion_weather_score"] = (
+        features["origin_congestion_ratio"] * features["origin_weather_intensity"]
+    )
+    features["destination_congestion_weather_score"] = (
+        features["destination_congestion_ratio"]
+        * features["destination_weather_intensity"]
+    )
+    features["route_congestion_weather_score"] = (
+        features["origin_congestion_ratio"] + features["destination_congestion_ratio"]
+    ) * (
+        features["origin_weather_intensity"] + features["destination_weather_intensity"]
+    )
+
+    return features
+
+
 def build_feature_matrices(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     target_column: str = TARGET_COLUMN,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Separate labels and apply train-only frequency encoding."""
+    """Separate labels and add deterministic plus train-only encoded features."""
 
     y_train = train_df[[target_column]].copy()
     y_test = test_df[[target_column]].copy()
 
     train_features = train_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
     test_features = test_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
+    train_features = add_temporal_features(train_features)
+    test_features = add_temporal_features(test_features)
+    train_features = add_congestion_weather_interaction_features(train_features)
+    test_features = add_congestion_weather_interaction_features(test_features)
     train_features["ROUTE"] = (
         train_features["ORIGIN_AIRPORT"] + "_" + train_features["DESTINATION_AIRPORT"]
     )
