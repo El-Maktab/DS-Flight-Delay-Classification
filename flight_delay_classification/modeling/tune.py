@@ -9,16 +9,16 @@ Description:
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
+import pickle
 from statistics import mean, pstdev
 from typing import Any
 
+from loguru import logger
 import mlflow
+from mlflow.models import infer_signature
 import mlflow.sklearn
 import pandas as pd
-from loguru import logger
-from mlflow.models import infer_signature
 from sklearn.base import BaseEstimator, clone
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import ParameterSampler
@@ -29,8 +29,10 @@ from flight_delay_classification.config import (
     PROCESSED_DATA_DIR,
     REPORTS_DIR,
 )
-from flight_delay_classification.evaluation.evaluate import evaluate_predictions
-from flight_delay_classification.evaluation.evaluate import compute_cost_metrics
+from flight_delay_classification.evaluation.evaluate import (
+    compute_cost_metrics,
+    evaluate_predictions,
+)
 from flight_delay_classification.features import (
     DEFAULT_FEATURE_SELECTION_METHOD,
     DEFAULT_MIN_MUTUAL_INFO,
@@ -41,8 +43,8 @@ from flight_delay_classification.features import (
     split_dataset,
 )
 from flight_delay_classification.modeling.registry import (
-    build_hist_gradient_boosting_estimator,
     build_hierarchical_hist_gradient_boosting_estimator,
+    build_hist_gradient_boosting_estimator,
     build_random_forest_estimator,
 )
 from flight_delay_classification.modeling.train import (

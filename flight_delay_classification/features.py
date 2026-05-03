@@ -8,10 +8,10 @@ Description:
 
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 from imblearn.over_sampling import SMOTE
 from loguru import logger
+import numpy as np
+import pandas as pd
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from sklearn.feature_selection import mutual_info_classif
 import typer
@@ -143,7 +143,10 @@ def _compute_weather_intensity(features: pd.DataFrame, prefix: str = "") -> pd.S
     temperature_column = f"{prefix}temperature_c"
 
     weather_intensity = (
-        (features[precipitation_column] >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"])
+        (
+            features[precipitation_column]
+            >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"]
+        )
         | (features[rain_column] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
     ).astype(float)
     weather_intensity += (
@@ -151,7 +154,10 @@ def _compute_weather_intensity(features: pd.DataFrame, prefix: str = "") -> pd.S
     ).astype(float)
     weather_intensity += (
         (features[wind_speed_column] >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"])
-        | (features[wind_gusts_column] >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"])
+        | (
+            features[wind_gusts_column]
+            >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"]
+        )
     ).astype(float)
     weather_intensity += (features[temperature_column] <= 0).astype(float)
 
@@ -308,9 +314,9 @@ def add_smoothed_historical_rate_features(
             train_features[feature_name] = (
                 leave_one_out_numerator / leave_one_out_denominator
             ).fillna(global_rate)
-            test_rates = (group_sums[rate_name] + HISTORICAL_SMOOTHING * global_rate) / (
-                group_size + HISTORICAL_SMOOTHING
-            )
+            test_rates = (
+                group_sums[rate_name] + HISTORICAL_SMOOTHING * global_rate
+            ) / (group_size + HISTORICAL_SMOOTHING)
             test_features[feature_name] = (
                 test_features[column].map(test_rates).fillna(global_rate)
             )

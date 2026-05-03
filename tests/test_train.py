@@ -231,7 +231,8 @@ def test_train_and_log_model_supports_mutual_info_feature_selection(
 
 
 def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
-    X_train = pd.DataFrame({"feature_a": [0.0, 1.0, 2.0], "feature_b": [0.0, 1.0, 2.0]})
+    X_train = pd.DataFrame(
+        {"feature_a": [0.0, 1.0, 2.0], "feature_b": [0.0, 1.0, 2.0]})
     y_train = pd.Series(["on_time", "on_time", "minor_delay"])
     X_test = pd.DataFrame({"feature_a": [3.0, 4.0], "feature_b": [3.0, 4.0]})
 
@@ -303,7 +304,7 @@ def test_cost_primary_metric_scoring_uses_average_misclassification_cost() -> No
     avg_cost = compute_average_misclassification_cost(y_true, y_pred)
     scoring, best_score_key, score_multiplier = resolve_search_scoring("cost")
 
-    assert avg_cost == pytest.approx((2 + 5 + 8) / 4)
+    assert avg_cost == pytest.approx((5 + 8 + 10) / 4)
     assert callable(scoring)
     assert best_score_key == "best_cv_average_misclassification_cost"
     assert score_multiplier == -1.0
@@ -635,7 +636,8 @@ def test_run_all_models_runs_each_registered_mode(
     )
 
     assert [call["model_mode"] for call in calls] == list(MODEL_MODES)
-    assert [summary["model_mode"] for summary in summaries] == list(MODEL_MODES)
+    assert [summary["model_mode"]
+            for summary in summaries] == list(MODEL_MODES)
     assert [summary["run_name"] for summary in summaries] == [
         build_run_name("feature-refresh", model_mode, use_smote=False)
         for model_mode in MODEL_MODES
@@ -731,4 +733,5 @@ def test_run_all_models_applies_smote_once(
 
     assert smote_calls == 1
     assert len(train_calls) == len(MODEL_MODES)
-    assert all("smote_marker" in call["X_train"].columns for call in train_calls)
+    assert all(
+        "smote_marker" in call["X_train"].columns for call in train_calls)

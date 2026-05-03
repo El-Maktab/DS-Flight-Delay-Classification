@@ -27,7 +27,7 @@ This is a flight delay classification project that tries to answer this, Which a
 │                         `1.0-jqp-initial-data-exploration`.
 │
 ├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         flight_delay_classification and configuration for tools like black
+│                         flight_delay_classification and configuration for tools like ruff
 │
 ├── references         <- Data dictionaries, manuals, and all other explanatory materials.
 │

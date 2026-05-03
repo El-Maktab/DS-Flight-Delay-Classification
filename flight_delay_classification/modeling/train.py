@@ -8,21 +8,21 @@ Description:
 
 from __future__ import annotations
 
-import logging
-import json
-import pickle
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
+import logging
 from pathlib import Path
+import pickle
 from typing import Any, Iterator
 import warnings
 
-import mlflow
-import mlflow.sklearn
-import pandas as pd
 from loguru import logger
+import mlflow
 from mlflow import MlflowClient
 from mlflow.models import infer_signature
+import mlflow.sklearn
+import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
@@ -42,10 +42,10 @@ from flight_delay_classification.config import (
     PROJ_ROOT,
     REPORTS_DIR,
 )
-from flight_delay_classification.evaluation.evaluate import evaluate_predictions
 from flight_delay_classification.evaluation.evaluate import (
     compute_core_metrics,
     compute_cost_metrics,
+    evaluate_predictions,
 )
 from flight_delay_classification.features import (
     DEFAULT_FEATURE_SELECTION_METHOD,

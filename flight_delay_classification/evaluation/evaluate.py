@@ -9,12 +9,12 @@ Description:
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
+import pickle
 from typing import Any
 
-import pandas as pd
 from loguru import logger
+import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -52,15 +52,12 @@ def read_labels(labels_path: Path) -> pd.Series:
 def compute_core_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:
     return {
         "accuracy": accuracy_score(y_true, y_pred),
-
         # NOTE: balanced accuracy is more informative for imbalanced datasets (like ours)
         # it is the average recall across classes
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
-
         # NOTE: gives each class equal importance
         # F1 computed per class then averaged equally across classes
         "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
-
         # NOTE: complements macro view by reflecting real class frequency mix
         # F1 per class weighted by class support
         "weighted_f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
@@ -88,10 +85,8 @@ def compute_cost_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, floa
         # NOTE: caculates the cost based on the penalties we defined above
         # lower cost is better
         "average_misclassification_cost": avg_cost,
-
         # NOTE: this the average cost if considered that all flights are on time
         "baseline_on_time_average_cost": baseline_avg_cost,
-        
         # NOTE: how much cost we save compared to the baseline of predicting all flights as on time
         # higher is better, positive means we are saving cost and this model is worth using :)
         "cost_reduction_vs_on_time_baseline": baseline_avg_cost - avg_cost,

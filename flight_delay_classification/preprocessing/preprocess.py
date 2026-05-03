@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import TypedDict
 
 import pandas as pd
 
@@ -28,37 +27,46 @@ log = logging.getLogger(__name__)
 
 # Columns to drop because they are post-departure (target leakage) or identifiers
 LEAKAGE_COLUMNS: list[str] = [
-    "FLIGHT_NUMBER",        # row identifier - not a predictive feature
-    "TAIL_NUMBER",          # aircraft identifier - not predictive, also 0.22% null
-    "DEPARTURE_TIME",       # actual departure - only known after pushback
-    "ARRIVAL_TIME",         # actual arrival - only known after landing
-    "WHEELS_OFF",           # actual wheels-off - only known after pushback
-    "WHEELS_ON",            # actual wheels-on - only known after landing
-    "ELAPSED_TIME",         # actual elapsed - only known after landing
-    "AIR_TIME",             # actual airborne - only known after landing
-    "TAXI_OUT",             # actual taxi-out - only known after pushback
-    "TAXI_IN",              # actual taxi-in - only known after landing
-    "ARRIVAL_DELAY",        # used only to derive target; not a predictor
-    "AIR_SYSTEM_DELAY",     # post-departure delay breakdown - leakage
-    "SECURITY_DELAY",       # post-departure delay breakdown - leakage
-    "AIRLINE_DELAY",        # post-departure delay breakdown - leakage
+    "FLIGHT_NUMBER",  # row identifier - not a predictive feature
+    "TAIL_NUMBER",  # aircraft identifier - not predictive, also 0.22% null
+    "DEPARTURE_TIME",  # actual departure - only known after pushback
+    "ARRIVAL_TIME",  # actual arrival - only known after landing
+    "WHEELS_OFF",  # actual wheels-off - only known after pushback
+    "WHEELS_ON",  # actual wheels-on - only known after landing
+    "ELAPSED_TIME",  # actual elapsed - only known after landing
+    "AIR_TIME",  # actual airborne - only known after landing
+    "TAXI_OUT",  # actual taxi-out - only known after pushback
+    "TAXI_IN",  # actual taxi-in - only known after landing
+    "ARRIVAL_DELAY",  # used only to derive target; not a predictor
+    "AIR_SYSTEM_DELAY",  # post-departure delay breakdown - leakage
+    "SECURITY_DELAY",  # post-departure delay breakdown - leakage
+    "AIRLINE_DELAY",  # post-departure delay breakdown - leakage
     "LATE_AIRCRAFT_DELAY",  # post-departure delay breakdown - leakage
-    "WEATHER_DELAY",        # post-departure delay breakdown - leakage
+    "WEATHER_DELAY",  # post-departure delay breakdown - leakage
 ]
 
 # Columns where outlier capping is meaningful (numeric, model-relevant)
 OUTLIER_COLS: list[str] = [
-    "DISTANCE", "SCHEDULED_TIME",
-    "TAXI_OUT", "TAXI_IN", "AIR_TIME",
-    "temperature_c", "precipitation_mm", "wind_speed_kmh", "wind_gusts_kmh",
-    "dest_temperature_c", "dest_precipitation_mm",
-    "dest_wind_speed_kmh", "dest_wind_gusts_kmh",
+    "DISTANCE",
+    "SCHEDULED_TIME",
+    "TAXI_OUT",
+    "TAXI_IN",
+    "AIR_TIME",
+    "temperature_c",
+    "precipitation_mm",
+    "wind_speed_kmh",
+    "wind_gusts_kmh",
+    "dest_temperature_c",
+    "dest_precipitation_mm",
+    "dest_wind_speed_kmh",
+    "dest_wind_gusts_kmh",
 ]
 
 RANDOM_STATE: int = 42
 
 
 # 1. Drop leakage / identifier columns
+
 
 def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -76,6 +84,7 @@ def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # 2. Drop rows with numeric airport codes
+
 
 def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -100,6 +109,7 @@ def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # 3. Create target variable
+
 
 def create_target(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -133,20 +143,21 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
 
     # Drop columns as they are no longer needed
     df = df.drop(columns=["DEPARTURE_DELAY", "CANCELLED"])
-    log.info(
-        "[step 3 | create_target] Dropped DEPARTURE_DELAY and CANCELLED columns."
-    )
+    log.info("[step 3 | create_target] Dropped DEPARTURE_DELAY and CANCELLED columns.")
     return df
 
 
 # 4. Drop unlabellable rows
+
 
 def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Drop any row where DELAY_CATEGORY is still null after target creation.
     """
     before = len(df)
-    df = df.dropna(subset=["DELAY_CATEGORY"])   # drop na in column DELAY_CATEGORY (should not happen)
+    df = df.dropna(
+        subset=["DELAY_CATEGORY"]
+    )  # drop na in column DELAY_CATEGORY (should not happen)
     dropped = before - len(df)
     log.info(
         "[step 4 | drop_unlabellable_rows] Dropped %d rows with no assignable target class.",
@@ -156,6 +167,7 @@ def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # 5. Cap outliers
+
 
 def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -181,7 +193,12 @@ def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
             log.info(
                 "[step 5 | cap_outliers] %-30s capped %4d rows "
                 "(below %.2f: %d, above %.2f: %d)",
-                col, affected, lower, int(below), upper, int(above),
+                col,
+                affected,
+                lower,
+                int(below),
+                upper,
+                int(above),
             )
 
     log.info(
@@ -193,6 +210,7 @@ def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
 
 # 6. Drop remaining nulls
 
+
 def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
     """
     Drop any row that still has a null in a feature column that is not expected to be null.
@@ -203,10 +221,7 @@ def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
         "CANCELLATION_REASON",  # only populated for cancelled flights
     }
 
-    check_cols = [
-        c for c in df.columns
-        if c not in EXPECTED_NULL_COLS
-    ]
+    check_cols = [c for c in df.columns if c not in EXPECTED_NULL_COLS]
     df = df.dropna(subset=check_cols)
 
     dropped = before - len(df)
@@ -220,6 +235,7 @@ def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
 
 # 7. Validate after cleaning
 
+
 def validate_after_cleaning(df: pd.DataFrame) -> dict:
     """
     Re-run a subset of validation checks on the cleaned DataFrame to confirm
@@ -229,21 +245,21 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
 
     results = {
         "completeness": check_completeness(df),
-        "ranges":       check_ranges(df),
+        "ranges": check_ranges(df),
     }
 
     for check, result in results.items():
         icon = "\u2713" if result["passed"] else "\u2717"
         log.info(
             "[step 7 | validate_after_cleaning]   [%s] %-20s %s",
-            icon, check, result["summary"],
+            icon,
+            check,
+            result["summary"],
         )
 
     all_passed = all(r["passed"] for r in results.values())
     if not all_passed:
-        log.warning(
-            "[step 7 | validate_after_cleaning] Some checks did not pass."
-        )
+        log.warning("[step 7 | validate_after_cleaning] Some checks did not pass.")
     else:
         log.info(
             "[step 7 | validate_after_cleaning] All checks passed on cleaned data."
@@ -253,6 +269,7 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
 
 
 # 8. Save cleaned data to CSV
+
 
 def save_to_csv(df: pd.DataFrame, output_path: Path) -> None:
     """
@@ -264,11 +281,13 @@ def save_to_csv(df: pd.DataFrame, output_path: Path) -> None:
     df.to_csv(output_path, index=False)
     log.info(
         "[step 8 | save_to_csv] Saved %d rows × %d columns to %s",
-        *df.shape, output_path,
+        *df.shape,
+        output_path,
     )
 
 
 # 9. Before / after summary
+
 
 def summarize(
     df_before: pd.DataFrame,
@@ -277,6 +296,7 @@ def summarize(
     """
     Build a summary dict comparing the dataset before and after cleaning.
     """
+
     def _missing(df: pd.DataFrame) -> int:
         return int(df.isnull().sum().sum())
 
@@ -295,22 +315,31 @@ def summarize(
         },
     }
 
-    log.info("[step 9 | summarize] Before: %d rows × %d cols, %d missing cells",
-             summary["before"]["rows"], summary["before"]["columns"],
-             summary["before"]["missing_cells"])
-    log.info("[step 9 | summarize] After:  %d rows × %d cols, %d missing cells "
-             "(%d rows dropped, %d cols dropped)",
-             summary["after"]["rows"], summary["after"]["columns"],
-             summary["after"]["missing_cells"],
-             summary["after"]["rows_dropped"],
-             summary["after"]["columns_dropped"])
+    log.info(
+        "[step 9 | summarize] Before: %d rows × %d cols, %d missing cells",
+        summary["before"]["rows"],
+        summary["before"]["columns"],
+        summary["before"]["missing_cells"],
+    )
+    log.info(
+        "[step 9 | summarize] After:  %d rows × %d cols, %d missing cells "
+        "(%d rows dropped, %d cols dropped)",
+        summary["after"]["rows"],
+        summary["after"]["columns"],
+        summary["after"]["missing_cells"],
+        summary["after"]["rows_dropped"],
+        summary["after"]["columns_dropped"],
+    )
 
     return summary
 
 
 # Main pipeline
 
-def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.DataFrame, dict]:
+
+def run_pipeline(
+    df: pd.DataFrame, output_path: Path | None = None
+) -> tuple[pd.DataFrame, dict]:
     """
     Run the full preprocessing pipeline on a copy of the input DataFrame.
     The original DataFrame is never mutated.
@@ -337,7 +366,10 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
         (df_cleaned, summary)
     """
     if output_path is None:
-        output_path = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed")) / "flights_cleaned.csv"
+        output_path = (
+            Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
+            / "flights_cleaned.csv"
+        )
 
     log.info("=" * 60)
     log.info("PREPROCESSING PIPELINE - START")
@@ -345,7 +377,7 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
     log.info("=" * 60)
 
     df_before = df.copy()  # keep an unmodified snapshot for the summary
-    df = df.copy()         # work on a copy to not mutate the original df
+    df = df.copy()  # work on a copy to not mutate the original df
 
     df = drop_leakage_columns(df)
     df = drop_numeric_airport_rows(df)
@@ -373,6 +405,7 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
 
 # Entry point
 
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -391,9 +424,15 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("PREPROCESSING SUMMARY")
     print("=" * 60)
-    print(f"  Before : {summary['before']['rows']:>7,} rows * {summary['before']['columns']} columns")
-    print(f"  After  : {summary['after']['rows']:>7,} rows * {summary['after']['columns']} columns")
-    print(f"  Dropped: {summary['after']['rows_dropped']:>7,} rows, {summary['after']['columns_dropped']} columns")
+    print(
+        f"  Before : {summary['before']['rows']:>7,} rows * {summary['before']['columns']} columns"
+    )
+    print(
+        f"  After  : {summary['after']['rows']:>7,} rows * {summary['after']['columns']} columns"
+    )
+    print(
+        f"  Dropped: {summary['after']['rows_dropped']:>7,} rows, {summary['after']['columns_dropped']} columns"
+    )
     print(f"  Missing cells after: {summary['after']['missing_cells']}")
     print()
     print("  Post-cleaning validation:")

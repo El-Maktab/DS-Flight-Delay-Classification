@@ -4,7 +4,6 @@
 
 PROJECT_NAME = DS-Flight-Delay-Classification
 PYTHON_VERSION = 3.11
-PYTHON_INTERPRETER = python
 MLFLOW_TRACKING_URI = sqlite:///$(CURDIR)/mlflow.db
 MLFLOW_ARTIFACT_ROOT = file:///$(CURDIR)/mlartifacts
 
@@ -16,9 +15,9 @@ MLFLOW_ARTIFACT_ROOT = file:///$(CURDIR)/mlartifacts
 ## Install Python dependencies
 .PHONY: requirements
 requirements:
+	poetry env use $(PYTHON_VERSION)
+	poetry lock
 	poetry install
-	
-
 
 
 ## Delete all compiled Python files
@@ -31,32 +30,20 @@ clean:
 ## Lint using ruff (use `make format` to do formatting)
 .PHONY: lint
 lint:
-	ruff format --check
 	ruff check
+	ruff format --check
 
 ## Format source code with ruff
 .PHONY: format
 format:
-	ruff check --fix
 	ruff format
-
+	ruff check --fix
 
 
 ## Run tests
 .PHONY: test
 test:
-	python -m pytest tests
-
-
-## Set up Python interpreter environment
-.PHONY: create_environment
-create_environment:
-	poetry env use $(PYTHON_VERSION)
-	@echo ">>> Poetry environment created. Activate with: "
-	@echo '$$(poetry env activate)'
-	@echo ">>> Or run commands with:\npoetry run <command>"
-
-
+	poetry run pytest tests
 
 
 #################################################################################
@@ -67,21 +54,21 @@ create_environment:
 ## Make dataset
 .PHONY: data
 data: requirements
-	$(PYTHON_INTERPRETER) flight_delay_classification/dataset.py
+	poetry run python -m flight_delay_classification.dataset
 
 ## Generate features
 .PHONY: features
-features:
+features: data
 	poetry run python -m flight_delay_classification.features
 
 ## Train
 .PHONY: train
-train:
+train: features
 	poetry run python -m flight_delay_classification.modeling.train
 
 ## Evaluate
 .PHONY: evaluate
-evaluate:
+evaluate: train
 	poetry run python -m flight_delay_classification.evaluation.evaluate
 
 ## Open MLflow UI
@@ -106,4 +93,4 @@ endef
 export PRINT_HELP_PYSCRIPT
 
 help:
-	@$(PYTHON_INTERPRETER) -c "${PRINT_HELP_PYSCRIPT}" < $(MAKEFILE_LIST)
+	@python -c "${PRINT_HELP_PYSCRIPT}" < $(MAKEFILE_LIST)
