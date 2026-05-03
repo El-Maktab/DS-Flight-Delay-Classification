@@ -35,6 +35,7 @@ from flight_delay_classification.features import (
     DEFAULT_FEATURE_SELECTION_METHOD,
     DEFAULT_MIN_MUTUAL_INFO,
     TARGET_COLUMN,
+    adapt_features_for_model_mode,
     apply_smote,
     build_feature_matrices,
     split_dataset,
@@ -48,6 +49,7 @@ from flight_delay_classification.modeling.train import (
     RANDOM_STATE,
     build_cv_splitter,
     configure_mlflow,
+    suppress_mlflow_model_warnings,
 )
 
 app = typer.Typer()
@@ -219,6 +221,7 @@ def build_modeling_matrices_from_raw_frames(
 
 def evaluate_parameter_candidate_with_honest_cv(
     *,
+    model_mode: str = "",
     estimator: BaseEstimator,
     params: dict[str, Any],
     train_df: pd.DataFrame,
@@ -240,11 +243,16 @@ def evaluate_parameter_candidate_with_honest_cv(
         fold_valid_df = train_df.iloc[fold_valid_indices].reset_index(drop=True)
         X_fold_train, y_fold_train, X_fold_valid, y_fold_valid = (
             build_modeling_matrices_from_raw_frames(
-                train_df=fold_train_df,
-                test_df=fold_valid_df,
-                feature_selection_method=feature_selection_method,
-                min_mutual_info=min_mutual_info,
+                fold_train_df,
+                fold_valid_df,
+                feature_selection_method,
+                min_mutual_info,
             )
+        )
+        X_fold_train, X_fold_valid, _ = adapt_features_for_model_mode(
+            train_features=X_fold_train,
+            test_features=X_fold_valid,
+            model_mode=model_mode,
         )
 
         if use_smote:
@@ -280,6 +288,7 @@ def evaluate_parameter_candidate_with_honest_cv(
 
 def score_parameter_candidates_with_honest_cv(
     *,
+    model_mode: str = "",
     estimator: BaseEstimator,
     parameter_candidates: list[dict[str, Any]],
     train_df: pd.DataFrame,
@@ -293,6 +302,7 @@ def score_parameter_candidates_with_honest_cv(
     cv_splitter = build_cv_splitter(train_df[TARGET_COLUMN], train_df)
     scored_trials = [
         evaluate_parameter_candidate_with_honest_cv(
+            model_mode=model_mode,
             estimator=estimator,
             params=params,
             train_df=train_df,
@@ -402,6 +412,7 @@ def tune_and_log_search(
         )
     )
     scored_trials, cv_folds = score_parameter_candidates_with_honest_cv(
+        model_mode=model_mode,
         estimator=estimator,
         parameter_candidates=parameter_candidates,
         train_df=raw_train_df,
@@ -427,10 +438,15 @@ def tune_and_log_search(
     best_params = best_trial["params"]
 
     X_train, y_train, X_test, y_test = build_modeling_matrices_from_raw_frames(
-        train_df=raw_train_df,
-        test_df=raw_test_df,
-        feature_selection_method=feature_selection_method,
-        min_mutual_info=min_mutual_info,
+        raw_train_df,
+        raw_test_df,
+        feature_selection_method,
+        min_mutual_info,
+    )
+    X_train, X_test, _ = adapt_features_for_model_mode(
+        train_features=X_train,
+        test_features=X_test,
+        model_mode=model_mode,
     )
     if use_smote:
         X_train, y_train = apply_smote(X_train, y_train, random_state)
@@ -509,12 +525,13 @@ def tune_and_log_search(
         mlflow.log_metrics(evaluation_report["cost_metrics"])
         mlflow.log_metric("best_cv_score", best_cv_score)
         mlflow.log_metric(best_score_key, best_cv_score)
-        mlflow.sklearn.log_model(
-            sk_model=best_model,
-            name="model",
-            signature=infer_signature(sample, best_model.predict(sample)),
-            input_example=sample,
-        )
+        with suppress_mlflow_model_warnings():
+            mlflow.sklearn.log_model(
+                sk_model=best_model,
+                name="model",
+                signature=infer_signature(sample, best_model.predict(sample)),
+                input_example=sample,
+            )
         mlflow.log_dict(tuning_report, "tuning/tuning_report.json")
         mlflow.log_artifact(str(predictions_path), "evaluation")
 

@@ -8,10 +8,13 @@ Description:
 
 from __future__ import annotations
 
+import logging
 import json
 import pickle
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+import warnings
 
 import mlflow
 import mlflow.sklearn
@@ -46,6 +49,7 @@ from flight_delay_classification.evaluation.evaluate import (
 from flight_delay_classification.features import (
     DEFAULT_FEATURE_SELECTION_METHOD,
     DEFAULT_MIN_MUTUAL_INFO,
+    adapt_features_for_model_mode,
     apply_smote,
     select_informative_features,
 )
@@ -61,6 +65,7 @@ CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
 DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline-better-eval"
 MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
 RANDOM_STATE = 42
+MLFLOW_INTEGER_SCHEMA_WARNING = r"Hint: Inferred schema contains integer column\(s\)\."
 
 
 def read_labels(labels_path: Path) -> pd.Series:
@@ -161,6 +166,24 @@ def configure_mlflow(tracking_uri: str | None, experiment_name: str) -> str:
     return resolved_uri
 
 
+@contextmanager
+def suppress_mlflow_model_warnings() -> Iterator[None]:
+    sklearn_logger = logging.getLogger("mlflow.sklearn")
+    previous_level = sklearn_logger.level
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=MLFLOW_INTEGER_SCHEMA_WARNING,
+            category=UserWarning,
+            module=r"mlflow\.types\.utils",
+        )
+        sklearn_logger.setLevel(max(previous_level, logging.ERROR))
+        try:
+            yield
+        finally:
+            sklearn_logger.setLevel(previous_level)
+
+
 def train_and_log_model(
     features_path: Path,
     labels_path: Path,
@@ -216,6 +239,15 @@ def train_and_log_model(
         method=feature_selection_method,
         min_mutual_info=min_mutual_info,
     )
+    X_train, X_test, dropped_columns = adapt_features_for_model_mode(
+        train_features=X_train,
+        test_features=X_test,
+        model_mode=model_mode,
+    )
+    if dropped_columns:
+        selected_columns = [
+            column for column in selected_columns if column not in dropped_columns
+        ]
 
     training_result = train_model_for_mode(
         model_mode,
@@ -238,7 +270,18 @@ def train_and_log_model(
     )
     model = training_result.model
     class_weight = training_result.class_weight
-    train_predictions = pd.Series(model.predict(X_train), name=TARGET_COLUMN)
+    if model is not None:
+        train_predictions = pd.Series(model.predict(X_train), name=TARGET_COLUMN)
+    elif model_mode == "majority_baseline":
+        majority_class = y_train.value_counts().idxmax()
+        train_predictions = pd.Series(
+            [majority_class] * len(X_train),
+            name=TARGET_COLUMN,
+        )
+    else:
+        raise ValueError(
+            f"Model mode '{model_mode}' returned no fitted estimator, so train predictions cannot be computed"
+        )
     y_pred = training_result.y_pred
     train_metrics = compute_core_metrics(y_train, train_predictions)
     train_cost_metrics = compute_cost_metrics(y_train, train_predictions)
@@ -300,7 +343,9 @@ def train_and_log_model(
                 "selected_feature_columns": len(selected_columns),
             }
         )
-        mlflow.log_metrics({f"train_{key}": value for key, value in train_metrics.items()})
+        mlflow.log_metrics(
+            {f"train_{key}": value for key, value in train_metrics.items()}
+        )
         mlflow.log_metrics(
             {f"train_{key}": value for key, value in train_cost_metrics.items()}
         )
@@ -308,12 +353,13 @@ def train_and_log_model(
         mlflow.log_metrics(cost_metrics)
         mlflow.log_metrics(cv_scores)
         if model is not None:
-            mlflow.sklearn.log_model(
-                sk_model=model,
-                name="model",
-                signature=infer_signature(sample, model.predict(sample)),
-                input_example=sample,
-            )
+            with suppress_mlflow_model_warnings():
+                mlflow.sklearn.log_model(
+                    sk_model=model,
+                    name="model",
+                    signature=infer_signature(sample, model.predict(sample)),
+                    input_example=sample,
+                )
         mlflow.log_dict(evaluation_report, "evaluation/evaluation_report.json")
         mlflow.log_artifact(str(predictions_path), "evaluation")
 
@@ -323,6 +369,7 @@ def train_and_log_model(
     logger.info("Metrics: {}", metrics)
     return {
         "model_path": resolved_model_path,
+        "evaluation_report_path": str(evaluation_report_path),
         "run_id": run.info.run_id,
         "tracking_uri": resolved_uri,
         "train_metrics": train_metrics,

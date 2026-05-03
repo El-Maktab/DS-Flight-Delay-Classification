@@ -20,6 +20,10 @@ from flight_delay_classification.config import (
     PROCESSED_DATA_DIR,
     REPORTS_DIR,
 )
+from flight_delay_classification.evaluation.model_selection import (
+    build_model_selection_report,
+    write_model_selection_report,
+)
 from flight_delay_classification.features import apply_smote
 from flight_delay_classification.modeling.registry import MODEL_MODES
 from flight_delay_classification.modeling.train import (
@@ -50,6 +54,13 @@ def build_artifact_stem(run_prefix: str, model_mode: str, use_smote: bool) -> st
     )
 
 
+def build_selection_stem(run_prefix: str, use_smote: bool) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", run_prefix)
+    if use_smote:
+        return f"{stem}-best-model-smote"
+    return f"{stem}-best-model"
+
+
 def run_all_models(
     experiment_name: str,
     run_prefix: str,
@@ -57,6 +68,7 @@ def run_all_models(
     labels_path: Path,
     test_features_path: Path,
     test_labels_path: Path,
+    selection_report_path: Path | None = None,
     tracking_uri: str | None = None,
     use_smote: bool = False,
     max_iter: int = 2000,
@@ -64,6 +76,7 @@ def run_all_models(
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    primary_metric: str = "balanced_accuracy",
     random_state: int = RANDOM_STATE,
 ) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
@@ -115,6 +128,21 @@ def run_all_models(
         )
         logger.info("Completed {} as {}", model_mode, run_name)
 
+    selection_report = build_model_selection_report(
+        summaries,
+        primary_metric=primary_metric,
+    )
+    selection_output_path = selection_report_path or (
+        evaluation_output_dir / f"{build_selection_stem(run_prefix, use_smote)}.json"
+    )
+    write_model_selection_report(selection_report, selection_output_path)
+    logger.info(
+        "Selected best model {} using holdout {}",
+        selection_report["best_model"]["model_mode"],
+        primary_metric,
+    )
+    logger.info("Selection report saved to {}", selection_output_path)
+
     return summaries
 
 
@@ -126,6 +154,7 @@ def main(
     labels_path: Path = PROCESSED_DATA_DIR / "labels.csv",
     test_features_path: Path = PROCESSED_DATA_DIR / "test_features.csv",
     test_labels_path: Path = PROCESSED_DATA_DIR / "test_labels.csv",
+    selection_report_path: Path | None = None,
     tracking_uri: str | None = None,
     use_smote: bool = False,
     max_iter: int = 2000,
@@ -133,6 +162,7 @@ def main(
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    primary_metric: str = "balanced_accuracy",
     random_state: int = RANDOM_STATE,
 ) -> None:
     summaries = run_all_models(
@@ -142,6 +172,7 @@ def main(
         labels_path=labels_path,
         test_features_path=test_features_path,
         test_labels_path=test_labels_path,
+        selection_report_path=selection_report_path,
         tracking_uri=tracking_uri,
         use_smote=use_smote,
         max_iter=max_iter,
@@ -149,6 +180,7 @@ def main(
         rf_class_weight=rf_class_weight,
         rf_min_samples_leaf=rf_min_samples_leaf,
         rf_max_depth=rf_max_depth,
+        primary_metric=primary_metric,
         random_state=random_state,
     )
 

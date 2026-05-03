@@ -14,6 +14,7 @@ import pytest
 
 from flight_delay_classification.features import (
     add_smoothed_historical_rate_features,
+    adapt_features_for_model_mode,
     build_feature_matrices,
     prepare_feature_artifacts,
     select_informative_features,
@@ -402,3 +403,60 @@ def test_smoothed_historical_rate_features_use_leave_one_out_on_train() -> None:
     assert encoded_test.loc[2, "airline_historical_on_time_rate"] == pytest.approx(
         1 / 3
     )
+
+
+def test_adapt_features_for_model_mode_drops_historical_features_for_hist_gradient() -> (
+    None
+):
+    train_features = pd.DataFrame(
+        {
+            "signal_feature": [0.0, 1.0],
+            "route_historical_on_time_rate": [0.2, 0.8],
+            "airline_route_historical_major_delay_rate": [0.1, 0.9],
+        }
+    )
+    test_features = pd.DataFrame(
+        {
+            "signal_feature": [0.5],
+            "route_historical_on_time_rate": [0.4],
+            "airline_route_historical_major_delay_rate": [0.6],
+        }
+    )
+
+    adapted_train, adapted_test, dropped_columns = adapt_features_for_model_mode(
+        train_features=train_features,
+        test_features=test_features,
+        model_mode="hist_gradient_boosting",
+    )
+
+    assert adapted_train.columns.tolist() == ["signal_feature"]
+    assert adapted_test.columns.tolist() == ["signal_feature"]
+    assert dropped_columns == [
+        "route_historical_on_time_rate",
+        "airline_route_historical_major_delay_rate",
+    ]
+
+
+def test_adapt_features_for_model_mode_keeps_historical_features_for_logistic() -> None:
+    train_features = pd.DataFrame(
+        {
+            "signal_feature": [0.0, 1.0],
+            "route_historical_on_time_rate": [0.2, 0.8],
+        }
+    )
+    test_features = pd.DataFrame(
+        {
+            "signal_feature": [0.5],
+            "route_historical_on_time_rate": [0.4],
+        }
+    )
+
+    adapted_train, adapted_test, dropped_columns = adapt_features_for_model_mode(
+        train_features=train_features,
+        test_features=test_features,
+        model_mode="logreg_balanced",
+    )
+
+    assert adapted_train.columns.tolist() == train_features.columns.tolist()
+    assert adapted_test.columns.tolist() == test_features.columns.tolist()
+    assert dropped_columns == []

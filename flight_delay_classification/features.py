@@ -72,6 +72,10 @@ WEATHER_INTENSITY_THRESHOLDS = {
 }
 DEFAULT_FEATURE_SELECTION_METHOD = "none"
 DEFAULT_MIN_MUTUAL_INFO = 0.001
+HIST_GRADIENT_MODEL_MODES = {
+    "hist_gradient_boosting",
+    "hierarchical_hist_gradient_boosting",
+}
 
 
 def split_dataset(
@@ -422,6 +426,34 @@ def select_informative_features(
         filtered_train_features[selected_columns].copy(),
         filtered_test_features[selected_columns].copy(),
         selected_columns,
+    )
+
+
+def adapt_features_for_model_mode(
+    train_features: pd.DataFrame,
+    test_features: pd.DataFrame,
+    model_mode: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    if model_mode not in HIST_GRADIENT_MODEL_MODES:
+        return train_features, test_features, []
+
+    dropped_columns = [
+        column
+        for column in train_features.columns
+        if "_historical_" in column and column in test_features.columns
+    ]
+    if not dropped_columns:
+        return train_features, test_features, []
+
+    logger.info(
+        "Dropping {} historical target-encoding features for {} to avoid histogram boosting collapse",
+        len(dropped_columns),
+        model_mode,
+    )
+    return (
+        train_features.drop(columns=dropped_columns),
+        test_features.drop(columns=dropped_columns),
+        dropped_columns,
     )
 
 

@@ -38,10 +38,10 @@ CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
 # As we said in phase 1 report misclassifying a major delay or a cancellation
 # is the major concern and more costly than on time or minor_delay
 MISCLASS_COST = {
-    "on_time": 1,
-    "minor_delay": 2,
-    "major_delay": 5,
-    "cancelled": 8,
+    "on_time": 0.5,
+    "minor_delay": 5,
+    "major_delay": 8,
+    "cancelled": 10,
 }
 
 

@@ -15,6 +15,10 @@ import pandas as pd
 import pytest
 from sklearn.dummy import DummyClassifier
 
+from flight_delay_classification.evaluation.model_selection import (
+    build_model_selection_report,
+    load_selection_candidate,
+)
 from flight_delay_classification.modeling.registry import (
     MODEL_MODES,
     ModelTrainingRequest,
@@ -252,6 +256,39 @@ def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
     assert result.y_pred.tolist() == ["on_time", "on_time"]
 
 
+def test_train_and_log_model_supports_majority_baseline(tmp_path: Path) -> None:
+    features_path, labels_path, test_features_path, test_labels_path = (
+        write_modeling_artifacts(tmp_path)
+    )
+    tracking_db_path = tmp_path / "mlflow.db"
+    tracking_uri = f"sqlite:///{tracking_db_path.resolve().as_posix()}"
+    model_path = tmp_path / "models" / "majority-baseline.pkl"
+    report_path = tmp_path / "reports" / "majority-baseline.json"
+    predictions_path = tmp_path / "predictions" / "majority-baseline.csv"
+
+    summary = train_and_log_model(
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+        model_path=model_path,
+        evaluation_report_path=report_path,
+        predictions_path=predictions_path,
+        experiment_name="pytest-flight-delay-majority-baseline",
+        run_name="majority-baseline-test-run",
+        tracking_uri=tracking_uri,
+        model_mode="majority_baseline",
+        random_state=42,
+    )
+
+    assert summary["run_id"]
+    assert summary["model_path"] is None
+    assert report_path.exists()
+    assert predictions_path.exists()
+    assert summary["metrics"]["balanced_accuracy"] == pytest.approx(0.25)
+    assert summary["train_metrics"]["balanced_accuracy"] == pytest.approx(0.25)
+
+
 def test_boosting_search_space_includes_class_weight() -> None:
     search_space = build_hist_gradient_boosting_search_space()
 
@@ -294,8 +331,8 @@ def test_honest_cv_scoring_rebuilds_fold_local_features(
     def fake_build_modeling_matrices_from_raw_frames(
         train_df: pd.DataFrame,
         test_df: pd.DataFrame,
-        feature_selection_method: str,
-        min_mutual_info: float,
+        _feature_selection_method: str,
+        _min_mutual_info: float,
     ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         build_calls["count"] += 1
         train_features = pd.DataFrame({"feature_a": range(len(train_df))})
@@ -327,6 +364,134 @@ def test_honest_cv_scoring_rebuilds_fold_local_features(
     assert build_calls["count"] == cv_folds
     assert len(scored_trials) == 1
     assert scored_trials[0]["mean_score"] >= 0.0
+
+
+def test_build_model_selection_report_prefers_balanced_accuracy_then_cost() -> None:
+    report = build_model_selection_report(
+        [
+            {
+                "model_mode": "model_a",
+                "run_name": "run-a",
+                "model_path": "models/model_a.pkl",
+                "evaluation_report_path": "reports/model_a.json",
+                "metrics": {
+                    "balanced_accuracy": 0.42,
+                    "macro_f1": 0.35,
+                    "weighted_f1": 0.50,
+                },
+                "cost_metrics": {
+                    "average_misclassification_cost": 0.82,
+                    "cost_reduction_vs_on_time_baseline": 0.05,
+                },
+            },
+            {
+                "model_mode": "model_b",
+                "run_name": "run-b",
+                "model_path": "models/model_b.pkl",
+                "evaluation_report_path": "reports/model_b.json",
+                "metrics": {
+                    "balanced_accuracy": 0.42,
+                    "macro_f1": 0.35,
+                    "weighted_f1": 0.49,
+                },
+                "cost_metrics": {
+                    "average_misclassification_cost": 0.61,
+                    "cost_reduction_vs_on_time_baseline": 0.11,
+                },
+            },
+            {
+                "model_mode": "model_c",
+                "run_name": "run-c",
+                "model_path": "models/model_c.pkl",
+                "evaluation_report_path": "reports/model_c.json",
+                "metrics": {
+                    "balanced_accuracy": 0.39,
+                    "macro_f1": 0.40,
+                    "weighted_f1": 0.55,
+                },
+                "cost_metrics": {
+                    "average_misclassification_cost": 0.40,
+                    "cost_reduction_vs_on_time_baseline": 0.20,
+                },
+            },
+        ],
+        primary_metric="balanced_accuracy",
+    )
+
+    assert report["best_model"]["model_mode"] == "model_b"
+    assert [candidate["model_mode"] for candidate in report["ranking"]] == [
+        "model_b",
+        "model_a",
+        "model_c",
+    ]
+
+
+def test_build_model_selection_report_prefers_lower_cost_when_requested() -> None:
+    report = build_model_selection_report(
+        [
+            {
+                "model_mode": "high_accuracy",
+                "metrics": {
+                    "balanced_accuracy": 0.46,
+                    "macro_f1": 0.31,
+                    "weighted_f1": 0.52,
+                },
+                "cost_metrics": {
+                    "average_misclassification_cost": 0.80,
+                    "cost_reduction_vs_on_time_baseline": 0.04,
+                },
+            },
+            {
+                "model_mode": "lower_cost",
+                "metrics": {
+                    "balanced_accuracy": 0.43,
+                    "macro_f1": 0.30,
+                    "weighted_f1": 0.51,
+                },
+                "cost_metrics": {
+                    "average_misclassification_cost": 0.63,
+                    "cost_reduction_vs_on_time_baseline": 0.19,
+                },
+            },
+        ],
+        primary_metric="cost",
+    )
+
+    assert report["best_model"]["model_mode"] == "lower_cost"
+    assert report["selection_policy"]["evaluation_scope"] == "holdout_only"
+
+
+def test_load_selection_candidate_reads_holdout_report(tmp_path: Path) -> None:
+    report_path = tmp_path / "eval_hist_gradient_boosting_tuned.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "model_mode": "hist_gradient_boosting",
+                "holdout_report": {
+                    "core_metrics": {
+                        "accuracy": 0.6,
+                        "balanced_accuracy": 0.5,
+                        "macro_f1": 0.4,
+                        "weighted_f1": 0.55,
+                    },
+                    "cost_metrics": {
+                        "average_misclassification_cost": 0.7,
+                        "baseline_on_time_average_cost": 0.9,
+                        "cost_reduction_vs_on_time_baseline": 0.2,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    candidate = load_selection_candidate(report_path)
+
+    assert candidate.model_mode == "hist_gradient_boosting"
+    assert candidate.core_metrics["balanced_accuracy"] == pytest.approx(0.5)
+    assert candidate.cost_metrics["average_misclassification_cost"] == pytest.approx(
+        0.7
+    )
 
 
 @pytest.mark.parametrize(
@@ -432,9 +597,18 @@ def test_run_all_models_runs_each_registered_mode(
         calls.append(kwargs)
         return {
             "model_path": str(kwargs["model_path"]),
+            "evaluation_report_path": str(kwargs["evaluation_report_path"]),
             "run_id": f"run-{kwargs['model_mode']}",
             "tracking_uri": kwargs["tracking_uri"],
-            "metrics": {"macro_f1": 0.5},
+            "metrics": {
+                "balanced_accuracy": 0.5,
+                "macro_f1": 0.5,
+                "weighted_f1": 0.5,
+            },
+            "cost_metrics": {
+                "average_misclassification_cost": 0.8,
+                "cost_reduction_vs_on_time_baseline": 0.1,
+            },
             "class_order": ["on_time"],
         }
 
@@ -450,6 +624,13 @@ def test_run_all_models_runs_each_registered_mode(
         labels_path=labels_path,
         test_features_path=test_features_path,
         test_labels_path=test_labels_path,
+        selection_report_path=(
+            tmp_path
+            / "reports"
+            / "evaluation"
+            / "batch_runs"
+            / "feature-refresh-best-model.json"
+        ),
         tracking_uri="sqlite:///tmp.db",
     )
 
@@ -459,6 +640,13 @@ def test_run_all_models_runs_each_registered_mode(
         build_run_name("feature-refresh", model_mode, use_smote=False)
         for model_mode in MODEL_MODES
     ]
+    assert (
+        tmp_path
+        / "reports"
+        / "evaluation"
+        / "batch_runs"
+        / "feature-refresh-best-model.json"
+    ).exists()
 
 
 def test_run_all_models_applies_smote_once(
@@ -495,9 +683,18 @@ def test_run_all_models_applies_smote_once(
         train_calls.append(kwargs)
         return {
             "model_path": str(kwargs["model_path"]),
+            "evaluation_report_path": str(kwargs["evaluation_report_path"]),
             "run_id": f"run-{kwargs['model_mode']}",
             "tracking_uri": kwargs["tracking_uri"],
-            "metrics": {"macro_f1": 0.5},
+            "metrics": {
+                "balanced_accuracy": 0.5,
+                "macro_f1": 0.5,
+                "weighted_f1": 0.5,
+            },
+            "cost_metrics": {
+                "average_misclassification_cost": 0.8,
+                "cost_reduction_vs_on_time_baseline": 0.1,
+            },
             "class_order": ["on_time"],
         }
 
@@ -521,6 +718,13 @@ def test_run_all_models_applies_smote_once(
         labels_path=labels_path,
         test_features_path=test_features_path,
         test_labels_path=test_labels_path,
+        selection_report_path=(
+            tmp_path
+            / "reports"
+            / "evaluation"
+            / "batch_runs"
+            / "feature-refresh-best-model-smote.json"
+        ),
         tracking_uri="sqlite:///tmp.db",
         use_smote=True,
     )
