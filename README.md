@@ -2,7 +2,7 @@
 
 ## Team
 
-Team 5, Cairo University, Faculty of Engineering, Computer Engineering Department
+Team 5
 
 - Ahmed Hamed Gaber Hamed
 - Akram Hany Karam Salam
