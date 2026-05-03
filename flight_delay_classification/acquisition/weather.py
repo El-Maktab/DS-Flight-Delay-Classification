@@ -18,18 +18,18 @@ Flow:
     7. Save merged dataset to data/processed/flights_weather.csv
 """
 
+from datetime import datetime
 import json
 import logging
 import os
-import time
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+import time
 
+from dotenv import load_dotenv
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 from timezonefinder import TimezoneFinder
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -134,8 +134,13 @@ def fetch_weather_year(lat: float, lon: float) -> dict | None:
         try:
             response = requests.get(API_URL, params=params, timeout=30)
             if response.status_code == 429:
-                wait = backoff * (2 ** attempt)
-                log.warning("Rate limited (429). Retrying in %ds (attempt %d/%d)...", wait, attempt + 1, max_retries)
+                wait = backoff * (2**attempt)
+                log.warning(
+                    "Rate limited (429). Retrying in %ds (attempt %d/%d)...",
+                    wait,
+                    attempt + 1,
+                    max_retries,
+                )
                 time.sleep(wait)
                 continue
             response.raise_for_status()
@@ -245,7 +250,9 @@ def build_airport_timezones(
     return result
 
 
-def local_to_eastern(month: int, day: int, local_hour: int, airport_tz: str) -> tuple[int, int, int]:
+def local_to_eastern(
+    month: int, day: int, local_hour: int, airport_tz: str
+) -> tuple[int, int, int]:
     """
     Convert a local (month, day, hour) to Eastern time.
     Returns (month, day, hour) in America/New_York, accounting for DST.
@@ -255,7 +262,9 @@ def local_to_eastern(month: int, day: int, local_hour: int, airport_tz: str) -> 
     return dt_eastern.month, dt_eastern.day, dt_eastern.hour
 
 
-def arrival_day(departure_day: int, departure_hour: int, scheduled_time_min: float) -> int:
+def arrival_day(
+    departure_day: int, departure_hour: int, scheduled_time_min: float
+) -> int:
     """
     Return the arrival day-of-month, accounting for overnight flights.
     If scheduled_time_min is NaN we assume same-day arrival.
@@ -293,7 +302,9 @@ def merge_weather(
     def get_dest_weather(r):
         iata = r["DESTINATION_AIRPORT"]
         tz = airport_timezones.get(iata, "America/New_York")
-        arr_day = arrival_day(int(r["DAY"]), int(r["departure_hour"]), r["SCHEDULED_TIME"])
+        arr_day = arrival_day(
+            int(r["DAY"]), int(r["departure_hour"]), r["SCHEDULED_TIME"]
+        )
         try:
             e_month, e_day, e_hour = local_to_eastern(
                 int(r["MONTH"]), arr_day, int(r["scheduled_arrival_hour"]), tz
@@ -330,7 +341,9 @@ def main():
         set(flights["ORIGIN_AIRPORT"].dropna().tolist())
         | set(flights["DESTINATION_AIRPORT"].dropna().tolist())
     )
-    log.info("Unique airports to fetch (origin + destination): %d", len(unique_airports))
+    log.info(
+        "Unique airports to fetch (origin + destination): %d", len(unique_airports)
+    )
 
     lookup = build_weather_lookup(unique_airports, coords)
     log.info("Weather lookup built with %d hourly entries", len(lookup))
@@ -343,9 +356,17 @@ def main():
     merged = merge_weather(flights, lookup, airport_timezones)
 
     origin_weather_cols = [
-        "temperature_c", "precipitation_mm", "rain_mm", "snowfall_cm",
-        "wind_speed_kmh", "wind_direction_deg", "wind_gusts_kmh",
-        "cloud_cover_pct", "weather_code", "relative_humidity_pct", "pressure_msl_hpa",
+        "temperature_c",
+        "precipitation_mm",
+        "rain_mm",
+        "snowfall_cm",
+        "wind_speed_kmh",
+        "wind_direction_deg",
+        "wind_gusts_kmh",
+        "cloud_cover_pct",
+        "weather_code",
+        "relative_humidity_pct",
+        "pressure_msl_hpa",
     ]
     dest_weather_cols = [f"dest_{c}" for c in origin_weather_cols]
 
@@ -354,8 +375,16 @@ def main():
 
     log.info("Rows before merge : %d", len(flights))
     log.info("Rows after merge  : %d", len(merged))
-    log.info("Flights missing origin weather : %d (%.2f%%)", missing_origin, 100 * missing_origin / len(merged))
-    log.info("Flights missing dest weather   : %d (%.2f%%)", missing_dest, 100 * missing_dest / len(merged))
+    log.info(
+        "Flights missing origin weather : %d (%.2f%%)",
+        missing_origin,
+        100 * missing_origin / len(merged),
+    )
+    log.info(
+        "Flights missing dest weather   : %d (%.2f%%)",
+        missing_dest,
+        100 * missing_dest / len(merged),
+    )
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUTPUT_FILE, index=False)

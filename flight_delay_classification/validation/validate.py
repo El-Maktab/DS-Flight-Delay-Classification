@@ -20,79 +20,117 @@ log = logging.getLogger(__name__)
 # 1. Expected Schema
 
 EXPECTED_COLUMNS = [
-    "YEAR", "MONTH", "DAY", "DAY_OF_WEEK",
-    "AIRLINE", "FLIGHT_NUMBER", "TAIL_NUMBER",
-    "ORIGIN_AIRPORT", "DESTINATION_AIRPORT",
-    "SCHEDULED_DEPARTURE", "DEPARTURE_TIME", "DEPARTURE_DELAY",
-    "TAXI_OUT", "WHEELS_OFF", "SCHEDULED_TIME", "ELAPSED_TIME",
-    "AIR_TIME", "DISTANCE", "WHEELS_ON", "TAXI_IN",
-    "SCHEDULED_ARRIVAL", "ARRIVAL_TIME", "ARRIVAL_DELAY",
-    "DIVERTED", "CANCELLED", "CANCELLATION_REASON",
-    "AIR_SYSTEM_DELAY", "SECURITY_DELAY", "AIRLINE_DELAY",
-    "LATE_AIRCRAFT_DELAY", "WEATHER_DELAY",
-    "departure_hour", "scheduled_arrival_hour",
-    "temperature_c", "precipitation_mm", "rain_mm", "snowfall_cm",
-    "wind_speed_kmh", "wind_direction_deg", "wind_gusts_kmh",
-    "cloud_cover_pct", "weather_code", "relative_humidity_pct", "pressure_msl_hpa",
-    "dest_temperature_c", "dest_precipitation_mm", "dest_rain_mm", "dest_snowfall_cm",
-    "dest_wind_speed_kmh", "dest_wind_direction_deg", "dest_wind_gusts_kmh",
-    "dest_cloud_cover_pct", "dest_weather_code", "dest_relative_humidity_pct",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "DAY_OF_WEEK",
+    "AIRLINE",
+    "FLIGHT_NUMBER",
+    "TAIL_NUMBER",
+    "ORIGIN_AIRPORT",
+    "DESTINATION_AIRPORT",
+    "SCHEDULED_DEPARTURE",
+    "DEPARTURE_TIME",
+    "DEPARTURE_DELAY",
+    "TAXI_OUT",
+    "WHEELS_OFF",
+    "SCHEDULED_TIME",
+    "ELAPSED_TIME",
+    "AIR_TIME",
+    "DISTANCE",
+    "WHEELS_ON",
+    "TAXI_IN",
+    "SCHEDULED_ARRIVAL",
+    "ARRIVAL_TIME",
+    "ARRIVAL_DELAY",
+    "DIVERTED",
+    "CANCELLED",
+    "CANCELLATION_REASON",
+    "AIR_SYSTEM_DELAY",
+    "SECURITY_DELAY",
+    "AIRLINE_DELAY",
+    "LATE_AIRCRAFT_DELAY",
+    "WEATHER_DELAY",
+    "departure_hour",
+    "scheduled_arrival_hour",
+    "temperature_c",
+    "precipitation_mm",
+    "rain_mm",
+    "snowfall_cm",
+    "wind_speed_kmh",
+    "wind_direction_deg",
+    "wind_gusts_kmh",
+    "cloud_cover_pct",
+    "weather_code",
+    "relative_humidity_pct",
+    "pressure_msl_hpa",
+    "dest_temperature_c",
+    "dest_precipitation_mm",
+    "dest_rain_mm",
+    "dest_snowfall_cm",
+    "dest_wind_speed_kmh",
+    "dest_wind_direction_deg",
+    "dest_wind_gusts_kmh",
+    "dest_cloud_cover_pct",
+    "dest_weather_code",
+    "dest_relative_humidity_pct",
     "dest_pressure_msl_hpa",
 ]
 
 EXPECTED_DTYPES: dict[str, list[str]] = {
-    "YEAR":                 ["int64", "int32"],
-    "MONTH":                ["int64", "int32"],
-    "DAY":                  ["int64", "int32"],
-    "DAY_OF_WEEK":          ["int64", "int32"],
-    "FLIGHT_NUMBER":        ["int64", "int32"],
-    "SCHEDULED_DEPARTURE":  ["int64", "int32"],
-    "SCHEDULED_ARRIVAL":    ["int64", "int32"],
-    "DISTANCE":             ["int64", "int32"],
-    "DIVERTED":             ["int64", "int32"],
-    "CANCELLED":            ["int64", "int32"],
-    "AIRLINE":              ["object"],
-    "TAIL_NUMBER":          ["object"],
-    "ORIGIN_AIRPORT":       ["object"],
-    "DESTINATION_AIRPORT":  ["object"],
-    "CANCELLATION_REASON":  ["object"],
+    "YEAR": ["int64", "int32"],
+    "MONTH": ["int64", "int32"],
+    "DAY": ["int64", "int32"],
+    "DAY_OF_WEEK": ["int64", "int32"],
+    "FLIGHT_NUMBER": ["int64", "int32"],
+    "SCHEDULED_DEPARTURE": ["int64", "int32"],
+    "SCHEDULED_ARRIVAL": ["int64", "int32"],
+    "DISTANCE": ["int64", "int32"],
+    "DIVERTED": ["int64", "int32"],
+    "CANCELLED": ["int64", "int32"],
+    "AIRLINE": ["object"],
+    "TAIL_NUMBER": ["object"],
+    "ORIGIN_AIRPORT": ["object"],
+    "DESTINATION_AIRPORT": ["object"],
+    "CANCELLATION_REASON": ["object"],
 }
 
 # 2. Valid ranges
 
 COLUMN_RANGES: dict[str, tuple] = {
-    "MONTH":                  (1, 12),
-    "DAY":                    (1, 31),
-    "DAY_OF_WEEK":            (1, 7),
-    "SCHEDULED_DEPARTURE":    (0, 2359),
-    "SCHEDULED_ARRIVAL":      (0, 2359),
-    "DISTANCE":               (1, 10000),
-    "DIVERTED":               (0, 1),
-    "CANCELLED":              (0, 1),
-    "departure_hour":         (0, 23),
+    "MONTH": (1, 12),
+    "DAY": (1, 31),
+    "DAY_OF_WEEK": (1, 7),
+    "SCHEDULED_DEPARTURE": (0, 2359),
+    "SCHEDULED_ARRIVAL": (0, 2359),
+    "DISTANCE": (1, 10000),
+    "DIVERTED": (0, 1),
+    "CANCELLED": (0, 1),
+    "departure_hour": (0, 23),
     "scheduled_arrival_hour": (0, 23),
-    "temperature_c":          (-60, 60),
-    "precipitation_mm":       (0, 500),
-    "rain_mm":                (0, 500),
-    "snowfall_cm":            (0, 200),
-    "wind_speed_kmh":         (0, 400),
-    "wind_gusts_kmh":         (0, 400),
-    "cloud_cover_pct":        (0, 100),
-    "relative_humidity_pct":  (0, 100),
-    "pressure_msl_hpa":       (850, 1100),
-    "dest_temperature_c":          (-60, 60),
-    "dest_precipitation_mm":       (0, 500),
-    "dest_rain_mm":                (0, 500),
-    "dest_snowfall_cm":            (0, 200),
-    "dest_wind_speed_kmh":         (0, 400),
-    "dest_wind_gusts_kmh":         (0, 400),
-    "dest_cloud_cover_pct":        (0, 100),
-    "dest_relative_humidity_pct":  (0, 100),
-    "dest_pressure_msl_hpa":       (850, 1100),
+    "temperature_c": (-60, 60),
+    "precipitation_mm": (0, 500),
+    "rain_mm": (0, 500),
+    "snowfall_cm": (0, 200),
+    "wind_speed_kmh": (0, 400),
+    "wind_gusts_kmh": (0, 400),
+    "cloud_cover_pct": (0, 100),
+    "relative_humidity_pct": (0, 100),
+    "pressure_msl_hpa": (850, 1100),
+    "dest_temperature_c": (-60, 60),
+    "dest_precipitation_mm": (0, 500),
+    "dest_rain_mm": (0, 500),
+    "dest_snowfall_cm": (0, 200),
+    "dest_wind_speed_kmh": (0, 400),
+    "dest_wind_gusts_kmh": (0, 400),
+    "dest_cloud_cover_pct": (0, 100),
+    "dest_relative_humidity_pct": (0, 100),
+    "dest_pressure_msl_hpa": (850, 1100),
 }
 
 
 # 1. Schema Check
+
 
 def check_schema(df: pd.DataFrame) -> dict:
     """Verify all expected columns are present with correct dtypes."""
@@ -129,11 +167,21 @@ def check_schema(df: pd.DataFrame) -> dict:
 # Columns where we expect them to have high nulls (not a data issue)
 EXPECTED_NULLS = {
     "CANCELLATION_REASON",
-    "AIR_SYSTEM_DELAY", "SECURITY_DELAY", "AIRLINE_DELAY",
-    "LATE_AIRCRAFT_DELAY", "WEATHER_DELAY",
-    "DEPARTURE_TIME", "DEPARTURE_DELAY", "TAXI_OUT", "WHEELS_OFF",
-    "ELAPSED_TIME", "AIR_TIME", "WHEELS_ON", "TAXI_IN",
-    "ARRIVAL_TIME", "ARRIVAL_DELAY",
+    "AIR_SYSTEM_DELAY",
+    "SECURITY_DELAY",
+    "AIRLINE_DELAY",
+    "LATE_AIRCRAFT_DELAY",
+    "WEATHER_DELAY",
+    "DEPARTURE_TIME",
+    "DEPARTURE_DELAY",
+    "TAXI_OUT",
+    "WHEELS_OFF",
+    "ELAPSED_TIME",
+    "AIR_TIME",
+    "WHEELS_ON",
+    "TAXI_IN",
+    "ARRIVAL_TIME",
+    "ARRIVAL_DELAY",
 }
 
 
@@ -144,7 +192,9 @@ def check_completeness(df: pd.DataFrame) -> dict:
     missing_pct = (missing / total * 100).round(2)
 
     report = pd.DataFrame({"missing_count": missing, "missing_pct": missing_pct})
-    report = report[report["missing_count"] > 0].sort_values("missing_pct", ascending=False)
+    report = report[report["missing_count"] > 0].sort_values(
+        "missing_pct", ascending=False
+    )
 
     unexpected_nulls = report[~report.index.isin(EXPECTED_NULLS)]
     passed = len(unexpected_nulls) == 0
@@ -166,6 +216,7 @@ def check_completeness(df: pd.DataFrame) -> dict:
 
 
 # 3. Duplicates Check
+
 
 def check_duplicates(df: pd.DataFrame) -> dict:
     """Check for full-row duplicates and flight-level duplicates."""
@@ -196,6 +247,7 @@ def check_duplicates(df: pd.DataFrame) -> dict:
 
 
 # 4. Validity / Range checks
+
 
 def check_ranges(df: pd.DataFrame) -> dict:
     """Check that numeric columns fall within expected ranges."""
@@ -238,6 +290,7 @@ def check_ranges(df: pd.DataFrame) -> dict:
 
 # 5. Consistency Checks
 
+
 def check_consistency(df: pd.DataFrame) -> dict:
     """Cross-column logic checks."""
     issues: dict[str, dict] = {}
@@ -279,7 +332,11 @@ def check_consistency(df: pd.DataFrame) -> dict:
         }
 
     passed = not issues
-    summary = "All consistency checks passed." if passed else f"{len(issues)} consistency issues found."
+    summary = (
+        "All consistency checks passed."
+        if passed
+        else f"{len(issues)} consistency issues found."
+    )
     log.info("[consistency] %s", summary)
     return {
         "passed": passed,
@@ -304,9 +361,7 @@ def check_target(df: pd.DataFrame) -> dict:
     """
     total = len(df)
     cancelled_count = int((df["CANCELLED"] == 1).sum())
-    departure_null = int(
-        ((df["CANCELLED"] == 0) & df["DEPARTURE_DELAY"].isna()).sum()
-    )
+    departure_null = int(((df["CANCELLED"] == 0) & df["DEPARTURE_DELAY"].isna()).sum())
 
     # Non-cancelled flights with a valid DEPARTURE_DELAY
     active = df[(df["CANCELLED"] == 0) & df["DEPARTURE_DELAY"].notna()].copy()
@@ -347,12 +402,21 @@ def check_target(df: pd.DataFrame) -> dict:
 # 7. Outlier Detection
 
 OUTLIER_COLS = [
-    "DISTANCE", "SCHEDULED_TIME",
-    "ARRIVAL_DELAY", "DEPARTURE_DELAY",
-    "TAXI_OUT", "TAXI_IN", "AIR_TIME",
-    "temperature_c", "precipitation_mm", "wind_speed_kmh", "wind_gusts_kmh",
-    "dest_temperature_c", "dest_precipitation_mm",
-    "dest_wind_speed_kmh", "dest_wind_gusts_kmh",
+    "DISTANCE",
+    "SCHEDULED_TIME",
+    "ARRIVAL_DELAY",
+    "DEPARTURE_DELAY",
+    "TAXI_OUT",
+    "TAXI_IN",
+    "AIR_TIME",
+    "temperature_c",
+    "precipitation_mm",
+    "wind_speed_kmh",
+    "wind_gusts_kmh",
+    "dest_temperature_c",
+    "dest_precipitation_mm",
+    "dest_wind_speed_kmh",
+    "dest_wind_gusts_kmh",
 ]
 
 
@@ -398,6 +462,7 @@ def check_outliers(df: pd.DataFrame) -> dict:
 
 # 8. Referential Integrity
 
+
 def check_referential_integrity(
     df: pd.DataFrame,
     airlines_path: Path,
@@ -422,8 +487,12 @@ def check_referential_integrity(
 
     # Airports — only check IATA (non-numeric) codes
     known_airports = set(pd.read_csv(airports_path)["IATA_CODE"].dropna())
-    iata_origins = df.loc[~df["ORIGIN_AIRPORT"].str.isnumeric(), "ORIGIN_AIRPORT"].dropna()
-    iata_dests = df.loc[~df["DESTINATION_AIRPORT"].str.isnumeric(), "DESTINATION_AIRPORT"].dropna()
+    iata_origins = df.loc[
+        ~df["ORIGIN_AIRPORT"].str.isnumeric(), "ORIGIN_AIRPORT"
+    ].dropna()
+    iata_dests = df.loc[
+        ~df["DESTINATION_AIRPORT"].str.isnumeric(), "DESTINATION_AIRPORT"
+    ].dropna()
 
     unknown_origins = set(iata_origins.unique()) - known_airports
     unknown_dests = set(iata_dests.unique()) - known_airports
@@ -442,7 +511,11 @@ def check_referential_integrity(
         }
 
     passed = not issues
-    summary = "All codes match reference files." if passed else f"{len(issues)} referential integrity issue(s) found."
+    summary = (
+        "All codes match reference files."
+        if passed
+        else f"{len(issues)} referential integrity issue(s) found."
+    )
     log.info("[referential_integrity] %s", summary)
     return {
         "passed": passed,
@@ -452,6 +525,7 @@ def check_referential_integrity(
 
 
 # 9. Format / Pattern Validation
+
 
 def check_formats(df: pd.DataFrame) -> dict:
     """
@@ -506,7 +580,11 @@ def check_formats(df: pd.DataFrame) -> dict:
         }
 
     passed = not issues
-    summary = "All format checks passed." if passed else f"{len(issues)} format issue(s) found."
+    summary = (
+        "All format checks passed."
+        if passed
+        else f"{len(issues)} format issue(s) found."
+    )
     log.info("[formats] %s", summary)
     return {
         "passed": passed,
@@ -516,6 +594,7 @@ def check_formats(df: pd.DataFrame) -> dict:
 
 
 # 10. Temporal Validity
+
 
 def check_temporal(df: pd.DataFrame) -> dict:
     """
@@ -529,7 +608,9 @@ def check_temporal(df: pd.DataFrame) -> dict:
         max_day = calendar.monthrange(2015, month)[1]
         if day > max_day:
             count = int(((df["MONTH"] == month) & (df["DAY"] == day)).sum())
-            invalid_dates.append({"month": month, "day": day, "max_valid_day": max_day, "count": count})
+            invalid_dates.append(
+                {"month": month, "day": day, "max_valid_day": max_day, "count": count}
+            )
 
     passed = not invalid_dates
     summary = (
@@ -548,8 +629,12 @@ def check_temporal(df: pd.DataFrame) -> dict:
 # 11. Cardinality
 
 CATEGORICAL_COLS = [
-    "AIRLINE", "ORIGIN_AIRPORT", "DESTINATION_AIRPORT",
-    "CANCELLATION_REASON", "DAY_OF_WEEK", "MONTH",
+    "AIRLINE",
+    "ORIGIN_AIRPORT",
+    "DESTINATION_AIRPORT",
+    "CANCELLATION_REASON",
+    "DAY_OF_WEEK",
+    "MONTH",
 ]
 
 
@@ -574,11 +659,22 @@ def check_cardinality(df: pd.DataFrame) -> dict:
 # 12. Statistical Summary
 
 SUMMARY_COLS = [
-    "DISTANCE", "SCHEDULED_TIME", "ARRIVAL_DELAY", "DEPARTURE_DELAY",
-    "TAXI_OUT", "TAXI_IN", "AIR_TIME",
-    "temperature_c", "precipitation_mm", "wind_speed_kmh",
-    "wind_gusts_kmh", "cloud_cover_pct", "relative_humidity_pct", "pressure_msl_hpa",
-    "dest_temperature_c", "dest_wind_speed_kmh",
+    "DISTANCE",
+    "SCHEDULED_TIME",
+    "ARRIVAL_DELAY",
+    "DEPARTURE_DELAY",
+    "TAXI_OUT",
+    "TAXI_IN",
+    "AIR_TIME",
+    "temperature_c",
+    "precipitation_mm",
+    "wind_speed_kmh",
+    "wind_gusts_kmh",
+    "cloud_cover_pct",
+    "relative_humidity_pct",
+    "pressure_msl_hpa",
+    "dest_temperature_c",
+    "dest_wind_speed_kmh",
 ]
 
 
@@ -596,6 +692,7 @@ def check_statistics(df: pd.DataFrame) -> dict:
 
 # 13. Runner / CLI
 
+
 def run_all(
     df: pd.DataFrame,
     airlines_path: Path | None = None,
@@ -603,20 +700,22 @@ def run_all(
 ) -> dict[str, dict]:
     """Run all validation checks and return a combined results dict."""
     checks = {
-        "schema":        check_schema(df),
-        "completeness":  check_completeness(df),
-        "duplicates":    check_duplicates(df),
-        "ranges":        check_ranges(df),
-        "consistency":   check_consistency(df),
-        "outliers":      check_outliers(df),
-        "formats":       check_formats(df),
-        "temporal":      check_temporal(df),
-        "cardinality":   check_cardinality(df),
-        "statistics":    check_statistics(df),
-        "target":        check_target(df),
+        "schema": check_schema(df),
+        "completeness": check_completeness(df),
+        "duplicates": check_duplicates(df),
+        "ranges": check_ranges(df),
+        "consistency": check_consistency(df),
+        "outliers": check_outliers(df),
+        "formats": check_formats(df),
+        "temporal": check_temporal(df),
+        "cardinality": check_cardinality(df),
+        "statistics": check_statistics(df),
+        "target": check_target(df),
     }
     if airlines_path and airports_path:
-        checks["referential_integrity"] = check_referential_integrity(df, airlines_path, airports_path)
+        checks["referential_integrity"] = check_referential_integrity(
+            df, airlines_path, airports_path
+        )
     return checks
 
 
@@ -626,11 +725,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
 
     processed_dir = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
-    external_dir  = Path(os.getenv("EXTERNAL_DATA_DIR",  "data/external"))
+    external_dir = Path(os.getenv("EXTERNAL_DATA_DIR", "data/external"))
 
-    data_path     = processed_dir / "flights_weather.csv"
-    airlines_path = external_dir  / "airlines.csv"
-    airports_path = external_dir  / "airports.csv"
+    data_path = processed_dir / "flights_weather.csv"
+    airlines_path = external_dir / "airlines.csv"
+    airports_path = external_dir / "airports.csv"
 
     log.info("Loading %s ...", data_path)
     df = pd.read_csv(data_path, low_memory=False)

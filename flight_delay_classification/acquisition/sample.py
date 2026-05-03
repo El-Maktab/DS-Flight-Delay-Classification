@@ -10,8 +10,8 @@ import logging
 import os
 from pathlib import Path
 
-import pandas as pd
 from dotenv import load_dotenv
+import pandas as pd
 
 load_dotenv()
 
@@ -30,7 +30,11 @@ def sample_flights(input_path: Path, output_path: Path, frac: float) -> None:
     df = pd.read_csv(input_path, low_memory=False)
     log.info("Loaded %d rows, %d columns", len(df), df.shape[1])
 
-    sampled = df.groupby("MONTH", group_keys=False).apply(lambda x: x.sample(frac=frac, random_state=RANDOM_STATE)).reset_index(drop=True)
+    sampled = (
+        df.groupby("MONTH", group_keys=False)
+        .apply(lambda x: x.sample(frac=frac, random_state=RANDOM_STATE))
+        .reset_index(drop=True)
+    )
 
     log.info(
         "Sampled %d rows (%.1f%% of original) — distribution by month:\n%s",
