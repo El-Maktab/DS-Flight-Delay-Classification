@@ -38,10 +38,6 @@ ruff = "^0.4"
 ipykernel = "^6.29"
 gdown = "^5.2"
 
-[tool.black]
-line-length = 88
-target-version = ["py311"]
-
 [tool.ruff]
 line-length = 88
 src = ["flight_delay_classification"]
@@ -49,6 +45,7 @@ include = ["pyproject.toml", "flight_delay_classification/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["flight_delay_classification"]
