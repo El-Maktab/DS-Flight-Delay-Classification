@@ -647,7 +647,83 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Exploratory Data Analysis (EDA)}}
 
-\textit{Placeholder: add EDA content here.}
+The EDA was done on the cleaned modeling dataset with \textbf{106,444 rows} and \textbf{38 columns}. The goal was not only to describe the data, but to answer the questions that matter before modeling: how severe the class imbalance is, which features appear useful, where delays concentrate, and which columns look redundant or need special treatment.
+
+\subsection*{\textcolor{accentgold}{9.1 Target Distribution}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/eda/eda_target_distribution.png}
+    \caption{Target distribution in the cleaned dataset, shown as both counts and proportions.}
+    \label{fig:eda-target-distribution}
+\end{figure}
+
+The first thing the notebook makes clear is that the task is strongly imbalanced. About \textbf{80.5\%} of flights are \code{on\_time}, while \code{minor\_delay}, \code{major\_delay}, and \code{cancelled} make up the much smaller remainder. That matters immediately for modeling. A classifier can get a deceptively high accuracy score (foreshadowing) just by staying close to the majority class, which is exactly why balanced metrics and business-aware costs were needed later.
+
+\subsection*{\textcolor{accentgold}{9.2 Flight Activity Context}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/eda/eda_feature_context.png}
+    \caption{Context plots for the cleaned dataset: dominant airlines, busiest origin airports, monthly coverage, and departure-hour frequency.}
+    \label{fig:eda-feature-context}
+\end{figure}
+
+This figure gives the basic operating context of the dataset. Southwest (\code{WN}) is the largest airline by volume in the sample, while airports such as \code{ATL}, \code{ORD}, \code{DFW}, and \code{DEN} dominate the origin counts.
+
+\subsection*{\textcolor{accentgold}{9.3 Delay Mix by Airline and Month}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/eda/eda_delay_proportion_by_group.png}
+    \caption{Normalized delay-category mix by airline and by month. Raw counts were converted to within-group proportions so minority classes remain visible.}
+    \label{fig:eda-delay-proportion-group}
+\end{figure}
+
+Raw counts hide too much because \code{on\_time} dominates the dataset, so the notebook switched to within-group proportions. That view is much more useful. Some airlines, especially \code{NK} and \code{F9}, carry a visibly larger share of \code{major\_delay} and \code{cancelled} flights than the stronger carriers. The month view shows a similar pattern: winter months such as \textbf{January, February, and December} are worse, and \textbf{June and July} also show elevated disruption. These plots justified keeping airline and calendar features in the modeling pipeline.
+
+\subsection*{\textcolor{accentgold}{9.4 Delay Rate by Departure Hour}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/eda/eda_delay_rate_by_hour.png}
+    \caption{Share of flights that are not on time by scheduled departure hour, with the overall average shown as a dashed reference line.}
+    \label{fig:eda-delay-by-hour}
+\end{figure}
+
+Departure hour turned out to be one of the clearest temporal signals in the notebook. Flights leaving between roughly \textbf{14:00 and 22:00} have the highest not-on-time rate, while early-morning departures, especially around \textbf{05:00 to 07:00}, are the most reliable. That fits the usual delay-propagation story: once the day gets busy, late aircraft, gate pressure, and congestion start to compound. This is one of the main reasons we kept \code{departure\_hour} and later engineered time-based features around it.
+
+\subsection*{\textcolor{accentgold}{9.5 Numerical Features vs the Target}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\textwidth]{figures/eda/eda_bivariate_boxplots.png}
+    \caption{Selected numerical features plotted against the delay class. The plots focus on scheduled time, distance, departure hour, and cloud cover.}
+    \label{fig:eda-bivariate-boxplots}
+\end{figure}
+
+The notebook's box-plot analysis showed a few useful patterns, even though none of them by themselves cleanly separate the classes. Flights with \code{major\_delay} or \code{cancelled} labels tend to have slightly \textbf{longer scheduled times and distances}. Delayed and cancelled flights also tend to leave \textbf{later in the day}, which supports the departure-hour result above. Weather variables were mixed: temperature alone did not separate the classes much, but \textbf{cloud cover} and some wind-related variables were slightly worse for delayed and cancelled flights.
+
+\subsection*{\textcolor{accentgold}{9.6 Correlation Analysis and Redundancy}}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\textwidth]{figures/eda/eda_correlation_heatmap.png}
+    \caption{Correlation heatmap for selected flight and weather features, including an ordinal encoding of the target for rough linear comparison.}
+    \label{fig:eda-correlation-heatmap}
+\end{figure}
+
+The target correlation stayed weak across all individual features \textbf{the problem is not strongly linear}, and feature interactions matter more than any single raw column.
+
+\subsection*{\textcolor{accentgold}{9.7 EDA Takeaways That Affected Modeling}}
+
+The EDA directly shaped the modeling choices used later in the project:
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item Severe class imbalance made plain accuracy unreliable and justified class weighting, resampling experiments, and balanced evaluation metrics.
+    \item Airline, month, and departure-hour patterns gave strong support for keeping temporal and categorical context features.
+    \item Weak linear target correlations suggested that non-linear models would likely outperform a purely linear baseline once the feature representation improved.
+\end{itemize}
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Model Development}}
