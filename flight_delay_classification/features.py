@@ -78,6 +78,161 @@ HIST_GRADIENT_MODEL_MODES = {
 }
 
 
+def _build_route_column(features: pd.DataFrame) -> pd.Series:
+    return features["ORIGIN_AIRPORT"] + "_" + features["DESTINATION_AIRPORT"]
+
+
+def _build_historical_targets(y_train: pd.Series) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "historical_delay_rate": (y_train != "on_time").astype(float),
+            "historical_on_time_rate": (y_train == "on_time").astype(float),
+            "historical_minor_delay_rate": (y_train == "minor_delay").astype(float),
+            "historical_severe_rate": (y_train == "major_delay").astype(float),
+            "historical_major_delay_rate": (y_train == "major_delay").astype(float),
+            "historical_cancelled_rate": (y_train == "cancelled").astype(float),
+        }
+    )
+
+
+def _add_frequency_encoded_columns(
+    train_features: pd.DataFrame,
+    test_features: pd.DataFrame,
+    columns: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    for column in columns:
+        # NOTE: Frequency maps are learned on train only to avoid leakage.
+        frequency_map = train_features[column].value_counts(normalize=True)
+        train_features[f"{column}_freq"] = train_features[column].map(frequency_map)
+        test_features[f"{column}_freq"] = (
+            test_features[column].map(frequency_map).fillna(0.0)
+        )
+
+    return train_features, test_features
+
+
+def _add_group_count_feature(
+    features: pd.DataFrame,
+    group_columns: list[str | pd.Series],
+    anchor_column: str,
+    feature_name: str,
+) -> None:
+    features[feature_name] = features.groupby(group_columns, dropna=False)[
+        anchor_column
+    ].transform("size")
+
+
+def _add_group_ratio_feature(
+    features: pd.DataFrame,
+    numerator_column: str,
+    group_columns: list[str],
+    feature_name: str,
+) -> None:
+    features[feature_name] = features[numerator_column] / features.groupby(
+        group_columns,
+        dropna=False,
+    )[numerator_column].transform("mean")
+
+
+def _compute_weather_intensity(features: pd.DataFrame, prefix: str = "") -> pd.Series:
+    precipitation_column = f"{prefix}precipitation_mm"
+    rain_column = f"{prefix}rain_mm"
+    snowfall_column = f"{prefix}snowfall_cm"
+    wind_speed_column = f"{prefix}wind_speed_kmh"
+    wind_gusts_column = f"{prefix}wind_gusts_kmh"
+    temperature_column = f"{prefix}temperature_c"
+
+    weather_intensity = (
+        (features[precipitation_column] >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"])
+        | (features[rain_column] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
+    ).astype(float)
+    weather_intensity += (
+        features[snowfall_column] > WEATHER_INTENSITY_THRESHOLDS["snowfall_cm"]
+    ).astype(float)
+    weather_intensity += (
+        (features[wind_speed_column] >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"])
+        | (features[wind_gusts_column] >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"])
+    ).astype(float)
+    weather_intensity += (features[temperature_column] <= 0).astype(float)
+
+    return weather_intensity
+
+
+def _drop_feature_engineering_categoricals(
+    train_features: pd.DataFrame,
+    test_features: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    categorical_columns = [
+        column
+        for column in [
+            *HISTORICAL_ENCODING_COLUMNS,
+            *INTERACTION_HISTORICAL_ENCODING_COLUMNS,
+            "departure_hour_bucket",
+        ]
+        if column in train_features.columns and column in test_features.columns
+    ]
+    if not categorical_columns:
+        return train_features, test_features
+
+    return (
+        train_features.drop(columns=categorical_columns),
+        test_features.drop(columns=categorical_columns),
+    )
+
+
+def _prepare_model_features(features: pd.DataFrame) -> pd.DataFrame:
+    """Build deterministic features that do not depend on training labels."""
+    features = add_temporal_features(features)
+    features = add_congestion_weather_interaction_features(features)
+    features["ROUTE"] = _build_route_column(features)
+    return add_dense_interaction_keys(features)
+
+
+def _apply_train_only_feature_enrichments(
+    train_features: pd.DataFrame,
+    test_features: pd.DataFrame,
+    y_train: pd.Series,
+    feature_selection_method: str,
+    min_mutual_info: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Apply train-fitted encodings and optional selection to both splits."""
+    route_columns = [
+        column
+        for column in HIGH_CARDINALITY_ROUTE_COLUMNS
+        if column in train_features.columns and column in test_features.columns
+    ]
+    train_features, test_features = _add_frequency_encoded_columns(
+        train_features,
+        test_features,
+        route_columns,
+    )
+
+    train_features, test_features = add_smoothed_historical_rate_features(
+        train_features=train_features,
+        test_features=test_features,
+        y_train=y_train,
+    )
+    train_features, test_features = add_smoothed_historical_rate_features(
+        train_features=train_features,
+        test_features=test_features,
+        y_train=y_train,
+        encoding_columns=INTERACTION_HISTORICAL_ENCODING_COLUMNS,
+    )
+    train_features, test_features = _drop_feature_engineering_categoricals(
+        train_features,
+        test_features,
+    )
+
+    train_features, test_features, _ = select_informative_features(
+        train_features=train_features,
+        test_features=test_features,
+        y_train=y_train,
+        method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+    )
+    return train_features, test_features
+
+
 def split_dataset(
     df: pd.DataFrame,
     target_column: str,
@@ -128,23 +283,9 @@ def add_smoothed_historical_rate_features(
     y_train: pd.Series,
     encoding_columns: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Add train-only smoothed historical rate features for the main route keys.
-
-    The function builds historical encodings from the training labels only
-    then applies the learned rates to both train and test features
-    it computes three binary target rates:
-    """
-    # NOTE: those binary targets keep the encoding dense without one-hot expanding the categories.
-    train_targets = pd.DataFrame(
-        {
-            "historical_delay_rate": (y_train != "on_time").astype(float),
-            "historical_on_time_rate": (y_train == "on_time").astype(float),
-            "historical_minor_delay_rate": (y_train == "minor_delay").astype(float),
-            "historical_severe_rate": (y_train == "major_delay").astype(float),
-            "historical_major_delay_rate": (y_train == "major_delay").astype(float),
-            "historical_cancelled_rate": (y_train == "cancelled").astype(float),
-        }
-    )
+    """Add smoothed train-only target encodings for the supplied categorical keys."""
+    # NOTE: Dense target-rate features avoid one-hot expansion on very wide keys.
+    train_targets = _build_historical_targets(y_train)
     global_rates = train_targets.mean().to_dict()
     resolved_encoding_columns = encoding_columns or HISTORICAL_ENCODING_COLUMNS
 
@@ -158,33 +299,27 @@ def add_smoothed_historical_rate_features(
 
         for rate_name, global_rate in global_rates.items():
             feature_name = f"{prefix}_{rate_name}"
-            smoothed_rates = (
-                group_size * (group_sums[rate_name] / group_size)
-                + HISTORICAL_SMOOTHING * global_rate
-            ) / (group_size + HISTORICAL_SMOOTHING)
             train_group_size = train_features[column].map(group_size)
             train_group_sum = train_features[column].map(group_sums[rate_name])
             leave_one_out_numerator = (
                 train_group_sum - train_targets[rate_name]
             ) + HISTORICAL_SMOOTHING * global_rate
             leave_one_out_denominator = (train_group_size - 1) + HISTORICAL_SMOOTHING
-            smoothed_rates = (
+            train_features[feature_name] = (
                 leave_one_out_numerator / leave_one_out_denominator
             ).fillna(global_rate)
-            train_features[feature_name] = smoothed_rates
+            test_rates = (group_sums[rate_name] + HISTORICAL_SMOOTHING * global_rate) / (
+                group_size + HISTORICAL_SMOOTHING
+            )
             test_features[feature_name] = (
-                test_features[column]
-                .map(
-                    (group_sums[rate_name] + HISTORICAL_SMOOTHING * global_rate)
-                    / (group_size + HISTORICAL_SMOOTHING)
-                )
-                .fillna(global_rate)
+                test_features[column].map(test_rates).fillna(global_rate)
             )
 
     return train_features, test_features
 
 
 def add_temporal_features(features: pd.DataFrame) -> pd.DataFrame:
+    """Create calendar and clock-based features from scheduled departure metadata."""
     departure_hour = features["SCHEDULED_DEPARTURE"] // 100
     arrival_hour = features["SCHEDULED_ARRIVAL"] // 100
     flight_dates = pd.to_datetime(
@@ -231,103 +366,67 @@ def add_temporal_features(features: pd.DataFrame) -> pd.DataFrame:
 def add_congestion_weather_interaction_features(
     features: pd.DataFrame,
 ) -> pd.DataFrame:
-    """builds simple airport traffic counts from scheduled departure
-    and arrival hour buckets then combines those congestion signals with small
-    origin and destination weather intensity scores so busy bad-weather
-    stand out more clearly.
-    """
+    """Combine airport congestion signals with origin and destination weather intensity."""
     departure_hour = (features["SCHEDULED_DEPARTURE"] // 100).rename("departure_hour")
     arrival_hour = (features["SCHEDULED_ARRIVAL"] // 100).rename("arrival_hour")
 
-    features["origin_hourly_departure_count"] = features.groupby(
+    _add_group_count_feature(
+        features,
         ["ORIGIN_AIRPORT", "DAY_OF_WEEK", departure_hour],
-        dropna=False,
-    )["ORIGIN_AIRPORT"].transform("size")
-    features["destination_hourly_arrival_count"] = features.groupby(
+        "ORIGIN_AIRPORT",
+        "origin_hourly_departure_count",
+    )
+    _add_group_count_feature(
+        features,
         ["DESTINATION_AIRPORT", "DAY_OF_WEEK", arrival_hour],
-        dropna=False,
-    )["DESTINATION_AIRPORT"].transform("size")
-    features["origin_departure_bank_count"] = features.groupby(
+        "DESTINATION_AIRPORT",
+        "destination_hourly_arrival_count",
+    )
+    _add_group_count_feature(
+        features,
         ["ORIGIN_AIRPORT", "DAY_OF_WEEK", "departure_hour_bucket"],
-        dropna=False,
-    )["ORIGIN_AIRPORT"].transform("size")
-    features["destination_departure_bank_count"] = features.groupby(
+        "ORIGIN_AIRPORT",
+        "origin_departure_bank_count",
+    )
+    _add_group_count_feature(
+        features,
         ["DESTINATION_AIRPORT", "DAY_OF_WEEK", "departure_hour_bucket"],
-        dropna=False,
-    )["DESTINATION_AIRPORT"].transform("size")
-
-    features["origin_congestion_ratio"] = features[
-        "origin_hourly_departure_count"
-    ] / features.groupby(["ORIGIN_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
-        "origin_hourly_departure_count"
-    ].transform(
-        "mean"
-    )
-    features["destination_congestion_ratio"] = features[
-        "destination_hourly_arrival_count"
-    ] / features.groupby(["DESTINATION_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
-        "destination_hourly_arrival_count"
-    ].transform(
-        "mean"
-    )
-    features["origin_departure_bank_ratio"] = features[
-        "origin_departure_bank_count"
-    ] / features.groupby(["ORIGIN_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
-        "origin_departure_bank_count"
-    ].transform(
-        "mean"
-    )
-    features["destination_departure_bank_ratio"] = features[
-        "destination_departure_bank_count"
-    ] / features.groupby(["DESTINATION_AIRPORT", "DAY_OF_WEEK"], dropna=False)[
-        "destination_departure_bank_count"
-    ].transform(
-        "mean"
+        "DESTINATION_AIRPORT",
+        "destination_departure_bank_count",
     )
 
-    features["origin_weather_intensity"] = (
-        (
-            features["precipitation_mm"]
-            >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"]
-        )
-        | (features["rain_mm"] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
-    ).astype(float)
-    features["origin_weather_intensity"] += (
-        features["snowfall_cm"] > WEATHER_INTENSITY_THRESHOLDS["snowfall_cm"]
-    ).astype(float)
-    features["origin_weather_intensity"] += (
-        (features["wind_speed_kmh"] >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"])
-        | (features["wind_gusts_kmh"] >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"])
-    ).astype(float)
-    features["origin_weather_intensity"] += (features["temperature_c"] <= 0).astype(
-        float
+    _add_group_ratio_feature(
+        features,
+        "origin_hourly_departure_count",
+        ["ORIGIN_AIRPORT", "DAY_OF_WEEK"],
+        "origin_congestion_ratio",
+    )
+    _add_group_ratio_feature(
+        features,
+        "destination_hourly_arrival_count",
+        ["DESTINATION_AIRPORT", "DAY_OF_WEEK"],
+        "destination_congestion_ratio",
+    )
+    _add_group_ratio_feature(
+        features,
+        "origin_departure_bank_count",
+        ["ORIGIN_AIRPORT", "DAY_OF_WEEK"],
+        "origin_departure_bank_ratio",
+    )
+    _add_group_ratio_feature(
+        features,
+        "destination_departure_bank_count",
+        ["DESTINATION_AIRPORT", "DAY_OF_WEEK"],
+        "destination_departure_bank_ratio",
     )
 
-    features["destination_weather_intensity"] = (
-        (
-            features["dest_precipitation_mm"]
-            >= WEATHER_INTENSITY_THRESHOLDS["precipitation_mm"]
-        )
-        | (features["dest_rain_mm"] >= WEATHER_INTENSITY_THRESHOLDS["rain_mm"])
-    ).astype(float)
-    features["destination_weather_intensity"] += (
-        features["dest_snowfall_cm"] > WEATHER_INTENSITY_THRESHOLDS["snowfall_cm"]
-    ).astype(float)
-    features["destination_weather_intensity"] += (
-        (
-            features["dest_wind_speed_kmh"]
-            >= WEATHER_INTENSITY_THRESHOLDS["wind_speed_kmh"]
-        )
-        | (
-            features["dest_wind_gusts_kmh"]
-            >= WEATHER_INTENSITY_THRESHOLDS["wind_gusts_kmh"]
-        )
-    ).astype(float)
-    features["destination_weather_intensity"] += (
-        features["dest_temperature_c"] <= 0
-    ).astype(float)
+    features["origin_weather_intensity"] = _compute_weather_intensity(features)
+    features["destination_weather_intensity"] = _compute_weather_intensity(
+        features,
+        prefix="dest_",
+    )
 
-    # NOTE: we
+    # NOTE: These interaction terms emphasize busy airports during disruptive weather.
     features["origin_congestion_weather_score"] = (
         features["origin_congestion_ratio"] * features["origin_weather_intensity"]
     )
@@ -378,6 +477,7 @@ def select_informative_features(
     method: str = DEFAULT_FEATURE_SELECTION_METHOD,
     min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """Optionally filter the feature matrix with a simple mutual-information rule."""
     if method == "none":
         return train_features, test_features, train_features.columns.tolist()
 
@@ -434,6 +534,7 @@ def adapt_features_for_model_mode(
     test_features: pd.DataFrame,
     model_mode: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    """Drop known-problematic encodings for model families that overfit them."""
     if model_mode not in HIST_GRADIENT_MODEL_MODES:
         return train_features, test_features, []
 
@@ -471,63 +572,13 @@ def build_feature_matrices(
 
     train_features = train_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
     test_features = test_df.drop(columns=[target_column, *NON_PREDICTIVE_COLUMNS])
-    train_features = add_temporal_features(train_features)
-    test_features = add_temporal_features(test_features)
-    train_features = add_congestion_weather_interaction_features(train_features)
-    test_features = add_congestion_weather_interaction_features(test_features)
-    train_features["ROUTE"] = (
-        train_features["ORIGIN_AIRPORT"] + "_" + train_features["DESTINATION_AIRPORT"]
-    )
-    test_features["ROUTE"] = (
-        test_features["ORIGIN_AIRPORT"] + "_" + test_features["DESTINATION_AIRPORT"]
-    )
-    train_features = add_dense_interaction_keys(train_features)
-    test_features = add_dense_interaction_keys(test_features)
-
-    route_columns = [
-        col
-        for col in HIGH_CARDINALITY_ROUTE_COLUMNS
-        if col in train_features.columns and col in test_features.columns
-    ]
-
-    for column in route_columns:
-        # NOTE: we calculate the frequency map on the training data to avoid leakage
-        frequency_map = train_features[column].value_counts(normalize=True)
-        train_features[f"{column}_freq"] = train_features[column].map(frequency_map)
-        test_features[f"{column}_freq"] = (
-            test_features[column].map(frequency_map).fillna(0.0)
-        )
-
-    train_features, test_features = add_smoothed_historical_rate_features(
+    train_features = _prepare_model_features(train_features)
+    test_features = _prepare_model_features(test_features)
+    train_features, test_features = _apply_train_only_feature_enrichments(
         train_features=train_features,
         test_features=test_features,
         y_train=y_train[target_column],
-    )
-    train_features, test_features = add_smoothed_historical_rate_features(
-        train_features=train_features,
-        test_features=test_features,
-        y_train=y_train[target_column],
-        encoding_columns=INTERACTION_HISTORICAL_ENCODING_COLUMNS,
-    )
-
-    categorical_columns = [
-        col
-        for col in [
-            *HISTORICAL_ENCODING_COLUMNS,
-            *INTERACTION_HISTORICAL_ENCODING_COLUMNS,
-            "departure_hour_bucket",
-        ]
-        if col in train_features.columns and col in test_features.columns
-    ]
-    if categorical_columns:
-        train_features = train_features.drop(columns=categorical_columns)
-        test_features = test_features.drop(columns=categorical_columns)
-
-    train_features, test_features, _ = select_informative_features(
-        train_features=train_features,
-        test_features=test_features,
-        y_train=y_train[target_column],
-        method=feature_selection_method,
+        feature_selection_method=feature_selection_method,
         min_mutual_info=min_mutual_info,
     )
 
