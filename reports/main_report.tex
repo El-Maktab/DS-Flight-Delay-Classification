@@ -923,30 +923,19 @@ For the stakeholder, this means the model is \textbf{useful for pre-departure pr
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Limitations \& Future Work}}
 
-\subsection*{\textcolor{accentgold}{14.1 Current Limitations}}
+
+\subsection*{\textcolor{accentgold}{16.1 Current Limitations}}
 
 \begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
-    \item \textbf{Single-year data scope:} the project is based on 2015 domestic US flights only. Seasonal patterns are represented, but cross-year drift and post-2015 operational changes are not validated.
-    \item \textbf{Sampled rather than full BTS scale:} the pipeline intentionally works on a reproducible 2\% stratified sample for tractability. This keeps the project manageable, but the learned decision boundaries may miss rare patterns visible only at full scale.
-    \item \textbf{Historical weather is easier than forecast weather:} the current feature source uses historical weather observations. A real deployment would depend on forecast data available before departure, which is noisier and may reduce real-world performance.
-    \item \textbf{Important upstream operational signals are absent:} the model does not include aircraft rotation history, previous-leg lateness, crew constraints, gate assignment pressure, or live NAS/ATC congestion feeds. Those are often crucial drivers of major delays.
-    \item \textbf{Random holdout, not chronological backtesting:} the final benchmark uses an honest untouched holdout, but it is still class-stratified random rather than a purely time-ordered split. This is weaker than a production-style forward-chaining evaluation.
-    \item \textbf{Minority-class precision remains low:} the winning model improves recall for disruption events, especially cancellations, but it over-predicts disruption on many flights that are actually on time. That limits direct automation.
-    \item \textbf{Tuning results were not uniformly stable:} some exploratory tuning runs looked promising in cross-validation yet did not survive the full honest holdout comparison. The project handled this correctly by locking final selection to the dedicated holdout experiment, but it still highlights that the problem remains hard and somewhat unstable.
+    \item \textbf{Low mutual-information for pre-departure features}: we found that the notebooks that use this datasets have huge data leakage so they get high results but the classification task itself without the leaking columns is a hard task even when augmented with weather data.
+    \item \textbf{The weather data is historical not forecast}
+    \item \textbf{The data is scoped in one year only}
+    \item \textbf{The missing tail\_number (plane\_identifier) reduced feature engineering} Tail number could have been used to track the cascading singal of a plane that has a delay in a certain day.
 \end{itemize}
 
-\subsection*{\textcolor{accentgold}{14.2 Future Work}}
 
-\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
-    \item Replace historical weather observations with \textbf{true pre-departure forecasts} so the deployed feature set matches the information available at decision time.
-    \item Add \textbf{upstream rotation and delay-propagation features}, especially aircraft tail history, inbound-leg delay, and airport turnaround pressure.
-    \item Validate the system with \textbf{time-based backtesting across multiple years} to measure drift and operational robustness more realistically.
-    \item Continue \textbf{cost-sensitive threshold tuning and probability calibration} so different stakeholders can trade off false alarms against missed disruption events explicitly.
-    \item Incorporate richer external signals such as \textbf{NAS congestion, airport traffic, and severe-weather alerts} to improve major-delay discrimination.
-    \item Build a lightweight \textbf{stakeholder-facing dashboard} that surfaces predicted class, confidence, and recommended operational action rather than exposing raw model outputs only.
-\end{itemize}
+To conclude, the current system is already strong enough to support \textbf{prioritization and early warning}, but not strong enough for full automation in an airline.
 
-In short, the current system is already strong enough to support \textbf{prioritization and early warning}, but not strong enough for full operational automation. The next project iteration should focus less on adding more model families and more on improving feature realism, temporal validation, and decision-threshold calibration.
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Team Contributions}}
