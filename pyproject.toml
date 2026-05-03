@@ -24,10 +24,12 @@ python-dotenv = "^1.0"
 timezonefinder = "^6.5"
 matplotlib = "^3.10.8"
 scikit-learn = "^1.8.0"
+imbalanced-learn = "^0.14.1"
 loguru = "*"
 tqdm = "*"
 typer = "*"
 mlflow = "^3.11.1"
+xgboost = "^3.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1"

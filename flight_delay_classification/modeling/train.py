@@ -19,8 +19,7 @@ import pandas as pd
 from loguru import logger
 from mlflow import MlflowClient
 from mlflow.models import infer_signature
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -28,8 +27,9 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+
+# NOTE: StratifiedKFold is a cross validation technique that preserves the class distribution
+from sklearn.model_selection import StratifiedKFold, cross_validate
 import typer
 
 from flight_delay_classification.config import (
@@ -39,6 +39,20 @@ from flight_delay_classification.config import (
     REPORTS_DIR,
 )
 from flight_delay_classification.evaluation.evaluate import evaluate_predictions
+from flight_delay_classification.evaluation.evaluate import (
+    compute_core_metrics,
+    compute_cost_metrics,
+)
+from flight_delay_classification.features import (
+    DEFAULT_FEATURE_SELECTION_METHOD,
+    DEFAULT_MIN_MUTUAL_INFO,
+    apply_smote,
+    select_informative_features,
+)
+from flight_delay_classification.modeling.registry import (
+    ModelTrainingRequest,
+    train_model_for_mode,
+)
 
 app = typer.Typer()
 
@@ -47,64 +61,56 @@ CLASS_ORDER = ["on_time", "minor_delay", "major_delay", "cancelled"]
 DEFAULT_EXPERIMENT_NAME = "flight-delay-baseline-better-eval"
 MLFLOW_DB_URI = f"sqlite:///{(PROJ_ROOT / 'mlflow.db').as_posix()}"
 RANDOM_STATE = 42
-MODEL_MODES = (
-    "logreg_balanced",
-    "logreg_unbalanced",
-    "majority_baseline",
-    "random_forest",
-)
 
 
 def read_labels(labels_path: Path) -> pd.Series:
     return pd.read_csv(labels_path)[TARGET_COLUMN]
 
 
-def train_logistic_model(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    max_iter: int,
-    random_state: int,
-    class_weight: str | None,
-) -> Pipeline:
-    model = Pipeline(
-        steps=[
-            (
-                "scaler",
-                StandardScaler(),
-            ),  # NOTE: scaling is important for logistic regression
-            (
-                "classifier",
-                LogisticRegression(
-                    class_weight=class_weight,  # NOTE: "balanced" is important for class imbalance (it tells the model to focus on minority classes)
-                    max_iter=max_iter,
-                    random_state=random_state,
-                ),
-            ),
-        ]
+def load_modeling_artifacts(
+    features_path: Path,
+    labels_path: Path,
+    test_features_path: Path,
+    test_labels_path: Path,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    return (
+        pd.read_csv(features_path),
+        read_labels(labels_path),
+        pd.read_csv(test_features_path),
+        read_labels(test_labels_path),
     )
-    model.fit(X_train, y_train)
-    return model
 
 
-def train_random_forest_model(
+def build_cv_splitter(
+    y_train: pd.Series,
+    X_train: pd.DataFrame,
+) -> StratifiedKFold:
+    # NOTE: between 2 and 5
+    n_splits = max(2, min(5, len(X_train) // max(y_train.nunique(), 2)))
+    return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+
+
+def evaluate_cv_scores(
+    model: BaseEstimator,
     X_train: pd.DataFrame,
     y_train: pd.Series,
-    random_state: int,
-    n_estimators: int,
-    class_weight: str | None,
-    min_samples_leaf: int,
-    max_depth: int | None,
-) -> RandomForestClassifier:
-    model = RandomForestClassifier(
-        n_estimators=n_estimators,
-        class_weight=class_weight,  # NOTE: can be 'balanced', 'balanced_subsample', 'balanced_subsample' is the recomended.
-        min_samples_leaf=min_samples_leaf,
-        max_depth=max_depth,
-        random_state=random_state,
-        n_jobs=-1,
+) -> dict[str, float]:
+    skf = build_cv_splitter(y_train, X_train)
+    scoring = {
+        "accuracy": "accuracy",
+        "balanced_accuracy": "balanced_accuracy",
+        "f1_macro": "f1_macro",
+        "f1_weighted": "f1_weighted",
+    }
+    cv_results = cross_validate(
+        model, X_train, y_train, cv=skf, scoring=scoring, return_train_score=False
     )
-    model.fit(X_train, y_train)
-    return model
+    return {
+        "cv_accuracy": cv_results["test_accuracy"].mean(),
+        "cv_balanced_accuracy": cv_results["test_balanced_accuracy"].mean(),
+        "cv_f1_macro": cv_results["test_f1_macro"].mean(),
+        "cv_f1_weighted": cv_results["test_f1_weighted"].mean(),
+    }
 
 
 def build_evaluation_outputs(
@@ -169,56 +175,82 @@ def train_and_log_model(
     run_name: str | None = None,
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
+    use_smote: bool = False,
     max_iter: int = 2000,
     rf_n_estimators: int = 300,
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    hgb_learning_rate: float = 0.1,
+    hgb_max_leaf_nodes: int = 31,
+    hgb_min_samples_leaf: int = 20,
+    hgb_l2_regularization: float = 0.0,
+    hgb_max_depth: int | None = None,
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
     random_state: int = RANDOM_STATE,
+    X_train: pd.DataFrame | None = None,
+    y_train: pd.Series | None = None,
+    X_test: pd.DataFrame | None = None,
+    y_test: pd.Series | None = None,
 ) -> dict[str, Any]:
-    if model_mode not in MODEL_MODES:
-        raise ValueError(
-            f"Invalid model_mode '{model_mode}'. Use one of: {MODEL_MODES}"
+    using_preloaded_data = not (
+        X_train is None or y_train is None or X_test is None or y_test is None
+    )
+
+    if not using_preloaded_data:
+        X_train, y_train, X_test, y_test = load_modeling_artifacts(
+            features_path=features_path,
+            labels_path=labels_path,
+            test_features_path=test_features_path,
+            test_labels_path=test_labels_path,
         )
 
-    X_train = pd.read_csv(features_path)
-    y_train = read_labels(labels_path)
-    X_test = pd.read_csv(test_features_path)
-    y_test = read_labels(test_labels_path)
+    if use_smote and not using_preloaded_data:
+        X_train, y_train = apply_smote(X_train, y_train, random_state)
 
-    model: Any | None = None
-    class_weight: str | None = None
-    if model_mode == "logreg_balanced":
-        class_weight = "balanced"
-        model = train_logistic_model(
-            X_train, y_train, max_iter, random_state, class_weight=class_weight
-        )
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    elif model_mode == "logreg_unbalanced":
-        model = train_logistic_model(
-            X_train, y_train, max_iter, random_state, class_weight=None
-        )
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    elif model_mode == "random_forest":
-        model = train_random_forest_model(
-            X_train,
-            y_train,
+    X_train, X_test, selected_columns = select_informative_features(
+        train_features=X_train,
+        test_features=X_test,
+        y_train=y_train,
+        method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+    )
+
+    training_result = train_model_for_mode(
+        model_mode,
+        ModelTrainingRequest(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            max_iter=max_iter,
+            rf_n_estimators=rf_n_estimators,
+            rf_class_weight=rf_class_weight,
+            rf_min_samples_leaf=rf_min_samples_leaf,
+            rf_max_depth=rf_max_depth,
             random_state=random_state,
-            n_estimators=rf_n_estimators,
-            class_weight=rf_class_weight,
-            min_samples_leaf=rf_min_samples_leaf,
-            max_depth=rf_max_depth,
-        )
-        y_pred = pd.Series(model.predict(X_test), name=TARGET_COLUMN)
-    else:
-        majority_class = y_train.value_counts().idxmax()
-        y_pred = pd.Series([majority_class] * len(y_test), name=TARGET_COLUMN)
+            hgb_learning_rate=hgb_learning_rate,
+            hgb_max_leaf_nodes=hgb_max_leaf_nodes,
+            hgb_min_samples_leaf=hgb_min_samples_leaf,
+            hgb_l2_regularization=hgb_l2_regularization,
+            hgb_max_depth=hgb_max_depth,
+        ),
+    )
+    model = training_result.model
+    class_weight = training_result.class_weight
+    train_predictions = pd.Series(model.predict(X_train), name=TARGET_COLUMN)
+    y_pred = training_result.y_pred
+    train_metrics = compute_core_metrics(y_train, train_predictions)
+    train_cost_metrics = compute_cost_metrics(y_train, train_predictions)
+    cv_scores = evaluate_cv_scores(model, X_train, y_train) if model is not None else {}
 
     evaluation_report = evaluate_predictions(
         y_true=y_test,
         y_pred=y_pred,
         predictions_path=predictions_path,
     )
+    evaluation_report["train_core_metrics"] = train_metrics
+    evaluation_report["train_cost_metrics"] = train_cost_metrics
     metrics = evaluation_report["core_metrics"]
     cost_metrics = evaluation_report["cost_metrics"]
 
@@ -241,44 +273,40 @@ def train_and_log_model(
         mlflow.set_tags(
             {
                 "stage": "baseline_training",
-                "model_family": (
-                    "majority_baseline"
-                    if model_mode == "majority_baseline"
-                    else (
-                        "random_forest"
-                        if model_mode == "random_forest"
-                        else "logistic_regression"
-                    )
-                ),
+                "model_family": training_result.model_family,
             }
         )
         mlflow.log_params(
             {
                 "model_mode": model_mode,
-                "algorithm": (
-                    "majority_baseline"
-                    if model_mode == "majority_baseline"
-                    else (
-                        "RandomForestClassifier"
-                        if model_mode == "random_forest"
-                        else "LogisticRegression"
-                    )
-                ),
-                "preprocessing": (
-                    "StandardScaler" if model_mode.startswith("logreg") else "none"
-                ),
+                "algorithm": training_result.algorithm,
+                "preprocessing": training_result.preprocessing,
+                "use_smote": use_smote,
                 "class_weight": class_weight,
                 "max_iter": max_iter,
                 "rf_n_estimators": rf_n_estimators,
                 "rf_class_weight": rf_class_weight,
                 "rf_min_samples_leaf": rf_min_samples_leaf,
                 "rf_max_depth": rf_max_depth,
+                "hgb_learning_rate": hgb_learning_rate,
+                "hgb_max_leaf_nodes": hgb_max_leaf_nodes,
+                "hgb_min_samples_leaf": hgb_min_samples_leaf,
+                "hgb_l2_regularization": hgb_l2_regularization,
+                "hgb_max_depth": hgb_max_depth,
+                "feature_selection_method": feature_selection_method,
+                "min_mutual_info": min_mutual_info,
                 "train_rows": len(X_train),
                 "feature_columns": len(X_train.columns),
+                "selected_feature_columns": len(selected_columns),
             }
+        )
+        mlflow.log_metrics({f"train_{key}": value for key, value in train_metrics.items()})
+        mlflow.log_metrics(
+            {f"train_{key}": value for key, value in train_cost_metrics.items()}
         )
         mlflow.log_metrics(metrics)
         mlflow.log_metrics(cost_metrics)
+        mlflow.log_metrics(cv_scores)
         if model is not None:
             mlflow.sklearn.log_model(
                 sk_model=model,
@@ -297,7 +325,10 @@ def train_and_log_model(
         "model_path": resolved_model_path,
         "run_id": run.info.run_id,
         "tracking_uri": resolved_uri,
+        "train_metrics": train_metrics,
+        "train_cost_metrics": train_cost_metrics,
         "metrics": metrics,
+        "cost_metrics": cost_metrics,
         "class_order": CLASS_ORDER,
     }
 
@@ -317,11 +348,19 @@ def main(
     run_name: str | None = None,
     tracking_uri: str | None = None,
     model_mode: str = "logreg_balanced",
+    use_smote: bool = False,
     max_iter: int = 2000,
     rf_n_estimators: int = 300,
     rf_class_weight: str | None = "balanced_subsample",
     rf_min_samples_leaf: int = 5,
     rf_max_depth: int | None = 25,
+    hgb_learning_rate: float = 0.1,
+    hgb_max_leaf_nodes: int = 31,
+    hgb_min_samples_leaf: int = 20,
+    hgb_l2_regularization: float = 0.0,
+    hgb_max_depth: int | None = None,
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
     random_state: int = RANDOM_STATE,
 ) -> None:
     summary = train_and_log_model(
@@ -336,11 +375,19 @@ def main(
         run_name=run_name,
         tracking_uri=tracking_uri,
         model_mode=model_mode,
+        use_smote=use_smote,
         max_iter=max_iter,
         rf_n_estimators=rf_n_estimators,
         rf_class_weight=rf_class_weight,
         rf_min_samples_leaf=rf_min_samples_leaf,
         rf_max_depth=rf_max_depth,
+        hgb_learning_rate=hgb_learning_rate,
+        hgb_max_leaf_nodes=hgb_max_leaf_nodes,
+        hgb_min_samples_leaf=hgb_min_samples_leaf,
+        hgb_l2_regularization=hgb_l2_regularization,
+        hgb_max_depth=hgb_max_depth,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
         random_state=random_state,
     )
 
