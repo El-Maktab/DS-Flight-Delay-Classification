@@ -17,7 +17,7 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-# ── Expected schema ────────────────────────────────────────────────────────────
+# 1. Expected Schema
 
 EXPECTED_COLUMNS = [
     "YEAR", "MONTH", "DAY", "DAY_OF_WEEK",
@@ -58,7 +58,7 @@ EXPECTED_DTYPES: dict[str, list[str]] = {
     "CANCELLATION_REASON":  ["object"],
 }
 
-# ── Valid ranges ───────────────────────────────────────────────────────────────
+# 2. Valid ranges
 
 COLUMN_RANGES: dict[str, tuple] = {
     "MONTH":                  (1, 12),
@@ -92,7 +92,7 @@ COLUMN_RANGES: dict[str, tuple] = {
 }
 
 
-# ── 1. Schema ──────────────────────────────────────────────────────────────────
+# 1. Schema Check
 
 def check_schema(df: pd.DataFrame) -> dict:
     """Verify all expected columns are present with correct dtypes."""
@@ -124,9 +124,9 @@ def check_schema(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 2. Completeness ────────────────────────────────────────────────────────────
+# 2. Completeness Check
 
-# Columns where high nulls are expected and not a data quality issue
+# Columns where we expect them to have high nulls (not a data issue)
 EXPECTED_NULLS = {
     "CANCELLATION_REASON",
     "AIR_SYSTEM_DELAY", "SECURITY_DELAY", "AIRLINE_DELAY",
@@ -165,13 +165,13 @@ def check_completeness(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 3. Duplicates ──────────────────────────────────────────────────────────────
+# 3. Duplicates Check
 
 def check_duplicates(df: pd.DataFrame) -> dict:
     """Check for full-row duplicates and flight-level duplicates."""
     full_dupes = df.duplicated().sum()
 
-    # A flight is uniquely identified by airline + flight number + date
+    # flights are unique by (airline + flight number + date)
     flight_keys = ["AIRLINE", "FLIGHT_NUMBER", "MONTH", "DAY"]
     flight_dupes = df.duplicated(subset=flight_keys).sum()
 
@@ -195,7 +195,7 @@ def check_duplicates(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 4. Validity / Range checks ─────────────────────────────────────────────────
+# 4. Validity / Range checks
 
 def check_ranges(df: pd.DataFrame) -> dict:
     """Check that numeric columns fall within expected ranges."""
@@ -236,7 +236,7 @@ def check_ranges(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 5. Consistency checks ──────────────────────────────────────────────────────
+# 5. Consistency Checks
 
 def check_consistency(df: pd.DataFrame) -> dict:
     """Cross-column logic checks."""
@@ -251,7 +251,7 @@ def check_consistency(df: pd.DataFrame) -> dict:
             "description": "Cancelled flights that still have a DEPARTURE_TIME value.",
         }
 
-    # Non-cancelled, non-diverted flights: ELAPSED_TIME ≈ TAXI_OUT + AIR_TIME + TAXI_IN
+    # For non-cancelled and non-diverted flights, ELAPSED_TIME should be equal to TAXI_OUT + AIR_TIME + TAXI_IN
     active = df[(df["CANCELLED"] == 0) & (df["DIVERTED"] == 0)]
     active = active.dropna(subset=["ELAPSED_TIME", "TAXI_OUT", "AIR_TIME", "TAXI_IN"])
     computed = active["TAXI_OUT"] + active["AIR_TIME"] + active["TAXI_IN"]
@@ -288,7 +288,7 @@ def check_consistency(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 6. Target readiness ────────────────────────────────────────────────────────
+# 6. Target Readiness
 
 TARGET_BINS = [-float("inf"), 15, 45, float("inf")]
 TARGET_LABELS = ["on_time", "minor_delay", "major_delay"]
@@ -296,7 +296,6 @@ TARGET_LABELS = ["on_time", "minor_delay", "major_delay"]
 
 def check_target(df: pd.DataFrame) -> dict:
     """
-    Assess readiness of DEPARTURE_DELAY as the classification target.
     Target definition:
         on_time      : DEPARTURE_DELAY <= 15 min
         minor_delay  : 15 < DEPARTURE_DELAY <= 45 min
@@ -345,7 +344,7 @@ def check_target(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 7. Outlier detection ───────────────────────────────────────────────────────
+# 7. Outlier Detection
 
 OUTLIER_COLS = [
     "DISTANCE", "SCHEDULED_TIME",
@@ -359,9 +358,7 @@ OUTLIER_COLS = [
 
 def check_outliers(df: pd.DataFrame) -> dict:
     """
-    Detect statistical outliers using the IQR method (1.5 × IQR fence).
-    Only flags outliers in columns relevant to the model — not operational
-    columns like WHEELS_OFF that are expected to have wide distributions.
+    Detect statistical outliers using the IQR method (1.5 * IQR fence).
     """
     results: dict[str, dict] = {}
 
@@ -399,7 +396,7 @@ def check_outliers(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 8. Referential integrity ───────────────────────────────────────────────────
+# 8. Referential Integrity
 
 def check_referential_integrity(
     df: pd.DataFrame,
@@ -454,13 +451,13 @@ def check_referential_integrity(
     }
 
 
-# ── 9. Format / pattern validation ────────────────────────────────────────────
+# 9. Format / Pattern Validation
 
 def check_formats(df: pd.DataFrame) -> dict:
     """
     Validate format of coded fields:
-    - IATA airport/airline codes: 2–3 uppercase letters
-    - HHMM time fields: minutes part must be 00–59
+    - IATA airport/airline codes: 3 uppercase letters
+    - HHMM time fields: minutes part must be 00-59
     - YEAR: all rows must be 2015
     - CANCELLATION_REASON: must be one of A, B, C, D (or null)
     """
@@ -518,12 +515,11 @@ def check_formats(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 10. Temporal validity ──────────────────────────────────────────────────────
+# 10. Temporal Validity
 
 def check_temporal(df: pd.DataFrame) -> dict:
     """
-    Validate that (YEAR, MONTH, DAY) combinations form real calendar dates.
-    E.g. February 30 or April 31 are invalid.
+    Check that (YEAR, MONTH, DAY) combinations form real dates.
     """
     import calendar
 
@@ -549,7 +545,7 @@ def check_temporal(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 11. Cardinality ────────────────────────────────────────────────────────────
+# 11. Cardinality
 
 CATEGORICAL_COLS = [
     "AIRLINE", "ORIGIN_AIRPORT", "DESTINATION_AIRPORT",
@@ -575,7 +571,7 @@ def check_cardinality(df: pd.DataFrame) -> dict:
     }
 
 
-# ── 12. Statistical summary ────────────────────────────────────────────────────
+# 12. Statistical Summary
 
 SUMMARY_COLS = [
     "DISTANCE", "SCHEDULED_TIME", "ARRIVAL_DELAY", "DEPARTURE_DELAY",
@@ -598,7 +594,7 @@ def check_statistics(df: pd.DataFrame) -> dict:
     }
 
 
-# ── Runner / CLI ──────────────────────────────────────────────────────────────
+# 13. Runner / CLI
 
 def run_all(
     df: pd.DataFrame,
@@ -638,7 +634,7 @@ def main() -> None:
 
     log.info("Loading %s ...", data_path)
     df = pd.read_csv(data_path, low_memory=False)
-    log.info("Loaded %d rows, %d columns", *df.shape)
+    log.info("Loaded %d rows * %d columns", *df.shape)
 
     results = run_all(df, airlines_path=airlines_path, airports_path=airports_path)
 

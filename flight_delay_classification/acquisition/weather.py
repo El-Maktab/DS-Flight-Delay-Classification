@@ -36,7 +36,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Paths from .env ────────────────────────────────────────────────────────────
+# Paths from .env
 RAW_DIR = Path(os.getenv("RAW_DATA_DIR", "data/raw"))
 PROCESSED_DIR = Path(os.getenv("PROCESSED_DATA_DIR", "data/processed"))
 EXTERNAL_DIR = Path(os.getenv("EXTERNAL_DATA_DIR", "data/external"))
@@ -46,7 +46,7 @@ FLIGHTS_FILE = RAW_DIR / "flights_sampled.csv"
 AIRPORTS_FILE = EXTERNAL_DIR / "airports.csv"
 OUTPUT_FILE = PROCESSED_DIR / "flights_weather.csv"
 
-# ── API config ─────────────────────────────────────────────────────────────────
+# API Config
 API_URL = "https://archive-api.open-meteo.com/v1/archive"
 WEATHER_VARIABLES = (
     "temperature_2m,precipitation,rain,snowfall,"
@@ -203,7 +203,7 @@ def build_weather_lookup(
 ) -> dict[tuple, dict]:
     """
     Fetch full-year weather for each unique airport.
-    Returns a dict keyed by (IATA, month, day, hour) → weather values.
+    Returns a dict keyed by (IATA, month, day, hour) -> weather values.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     lookup: dict[tuple, dict] = {}

@@ -28,22 +28,22 @@ log = logging.getLogger(__name__)
 
 # Columns to drop because they are post-departure (target leakage) or identifiers
 LEAKAGE_COLUMNS: list[str] = [
-    "FLIGHT_NUMBER",        # row identifier — not a predictive feature
-    "TAIL_NUMBER",          # aircraft identifier — not predictive, also 0.22% null
-    "DEPARTURE_TIME",       # actual departure — only known after pushback
-    "ARRIVAL_TIME",         # actual arrival   — only known after landing
-    "WHEELS_OFF",           # actual wheels-off — only known after pushback
-    "WHEELS_ON",            # actual wheels-on  — only known after landing
-    "ELAPSED_TIME",         # actual elapsed    — only known after landing
-    "AIR_TIME",             # actual airborne   — only known after landing
-    "TAXI_OUT",             # actual taxi-out   — only known after pushback
-    "TAXI_IN",              # actual taxi-in    — only known after landing
+    "FLIGHT_NUMBER",        # row identifier - not a predictive feature
+    "TAIL_NUMBER",          # aircraft identifier - not predictive, also 0.22% null
+    "DEPARTURE_TIME",       # actual departure - only known after pushback
+    "ARRIVAL_TIME",         # actual arrival - only known after landing
+    "WHEELS_OFF",           # actual wheels-off - only known after pushback
+    "WHEELS_ON",            # actual wheels-on - only known after landing
+    "ELAPSED_TIME",         # actual elapsed - only known after landing
+    "AIR_TIME",             # actual airborne - only known after landing
+    "TAXI_OUT",             # actual taxi-out - only known after pushback
+    "TAXI_IN",              # actual taxi-in - only known after landing
     "ARRIVAL_DELAY",        # used only to derive target; not a predictor
-    "AIR_SYSTEM_DELAY",     # post-departure delay breakdown — leakage
-    "SECURITY_DELAY",       # post-departure delay breakdown — leakage
-    "AIRLINE_DELAY",        # post-departure delay breakdown — leakage
-    "LATE_AIRCRAFT_DELAY",  # post-departure delay breakdown — leakage
-    "WEATHER_DELAY",        # post-departure delay breakdown — leakage
+    "AIR_SYSTEM_DELAY",     # post-departure delay breakdown - leakage
+    "SECURITY_DELAY",       # post-departure delay breakdown - leakage
+    "AIRLINE_DELAY",        # post-departure delay breakdown - leakage
+    "LATE_AIRCRAFT_DELAY",  # post-departure delay breakdown - leakage
+    "WEATHER_DELAY",        # post-departure delay breakdown - leakage
 ]
 
 # Columns where outlier capping is meaningful (numeric, model-relevant)
@@ -58,7 +58,7 @@ OUTLIER_COLS: list[str] = [
 RANDOM_STATE: int = 42
 
 
-# Step 1 - Drop leakage / identifier columns
+# 1. Drop leakage / identifier columns
 
 def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -75,7 +75,7 @@ def drop_leakage_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 2 - Drop rows with numeric airport codes
+# 2. Drop rows with numeric airport codes
 
 def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -99,11 +99,11 @@ def drop_numeric_airport_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 3 - Create target variable
+# 3. Create target variable
 
 def create_target(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build the 4-class DELAY_CATEGORY target column:
+    Build DELAY_CATEGORY target column:
         on_time     : DEPARTURE_DELAY <= 15 min  (FAA on-time standard)
         minor_delay : 15 < DEPARTURE_DELAY <= 45 min
         major_delay : DEPARTURE_DELAY > 45 min
@@ -139,7 +139,7 @@ def create_target(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 4 - Drop unlabellable rows
+# 4. Drop unlabellable rows
 
 def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -155,7 +155,7 @@ def drop_unlabellable_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 5 - Cap outliers
+# 5. Cap outliers
 
 def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -191,14 +191,11 @@ def cap_outliers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 6 - Drop remaining nulls
+# 6. Drop remaining nulls
 
 def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
     """
-    After all cleaning steps, drop any row that still has a null in a
-    feature column that is NOT expected to be null. Expected-null columns
-    (for ex. CANCELLATION_REASON, which is only set for cancelled flights)
-    are excluded from the check.
+    Drop any row that still has a null in a feature column that is not expected to be null.
     """
     before = len(df)
 
@@ -221,15 +218,12 @@ def drop_remaining_nulls(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Step 7 - Validate after cleaning
+# 7. Validate after cleaning
 
 def validate_after_cleaning(df: pd.DataFrame) -> dict:
     """
     Re-run a subset of validation checks on the cleaned DataFrame to confirm
-    that the known issues have been resolved. Results are logged and returned.
-
-    Notes:
-        We skipped some checks because we dropped the columns that are used in them.
+    that the known issues have been resolved.
     """
     log.info("[step 7 | validate_after_cleaning] Re-running validation checks...")
 
@@ -258,12 +252,12 @@ def validate_after_cleaning(df: pd.DataFrame) -> dict:
     return results
 
 
-# Step 8 - Save cleaned data to CSV
+# 8. Save cleaned data to CSV
 
 def save_to_csv(df: pd.DataFrame, output_path: Path) -> None:
     """
     Save the cleaned DataFrame to a CSV file so downstream stages
-    (feature engineering, modelling) can load it without re-running
+    (feature engineering, modeling) can load it without re-running
     preprocessing.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +268,7 @@ def save_to_csv(df: pd.DataFrame, output_path: Path) -> None:
     )
 
 
-# Step 9 - Before / after summary
+# 9. Before / after summary
 
 def summarize(
     df_before: pd.DataFrame,
@@ -322,18 +316,17 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
     The original DataFrame is never mutated.
 
     Steps:
-        1.  drop_leakage_columns      — remove post-departure & identifier cols
-        2.  drop_numeric_airport_rows — remove rows with no IATA/weather match
-        3.  create_target             — build 4-class DELAY_CATEGORY
-        4.  drop_unlabellable_rows    — remove rows with no assignable class
-        5.  cap_outliers              — 1st–99th percentile capping
-        6.  drop_remaining_nulls      — drop any residual unexpected nulls
-        7.  validate_after_cleaning   — re-run validation checks
-        8.  save to CSV               — write cleaned data to output_path
-        9.  summarize                 — before/after summary dict
+        1.  drop_leakage_columns      - remove post-departure & identifier cols
+        2.  drop_numeric_airport_rows - remove rows with no IATA/weather match
+        3.  create_target             - build 4-class DELAY_CATEGORY
+        4.  drop_unlabellable_rows    - remove rows with no assignable class
+        5.  cap_outliers              - 1st-99th percentile capping
+        6.  drop_remaining_nulls      - drop any residual unexpected nulls
+        7.  validate_after_cleaning   - re-run validation checks
+        8.  save to CSV               - write cleaned data to output_path
+        9.  summarize                 - before/after summary dict
 
-    Data splitting is intentionally deferred to the feature engineering /
-    modelling stage.
+    Data splitting should be done after preprocessing, during the feature engineering stage.
 
     Args:
         df:          Input DataFrame (flights_weather.csv).
@@ -348,7 +341,7 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
 
     log.info("=" * 60)
     log.info("PREPROCESSING PIPELINE - START")
-    log.info("Input: %d rows × %d columns", *df.shape)
+    log.info("Input: %d rows * %d columns", *df.shape)
     log.info("=" * 60)
 
     df_before = df.copy()  # keep an unmodified snapshot for the summary
@@ -372,7 +365,7 @@ def run_pipeline(df: pd.DataFrame, output_path: Path | None = None) -> tuple[pd.
     }
 
     log.info("=" * 60)
-    log.info("PREPROCESSING PIPELINE — DONE")
+    log.info("PREPROCESSING PIPELINE DONE")
     log.info("=" * 60)
 
     return df, summary
@@ -391,15 +384,15 @@ def main() -> None:
 
     log.info("Loading %s ...", data_path)
     df = pd.read_csv(data_path, low_memory=False)
-    log.info("Loaded %d rows × %d columns", *df.shape)
+    log.info("Loaded %d rows * %d columns", *df.shape)
 
     _, summary = run_pipeline(df)
 
     print("\n" + "=" * 60)
     print("PREPROCESSING SUMMARY")
     print("=" * 60)
-    print(f"  Before : {summary['before']['rows']:>7,} rows × {summary['before']['columns']} columns")
-    print(f"  After  : {summary['after']['rows']:>7,} rows × {summary['after']['columns']} columns")
+    print(f"  Before : {summary['before']['rows']:>7,} rows * {summary['before']['columns']} columns")
+    print(f"  After  : {summary['after']['rows']:>7,} rows * {summary['after']['columns']} columns")
     print(f"  Dropped: {summary['after']['rows_dropped']:>7,} rows, {summary['after']['columns_dropped']} columns")
     print(f"  Missing cells after: {summary['after']['missing_cells']}")
     print()
