@@ -738,70 +738,47 @@ More on this part in the results and evaluation section.
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Experiment Tracking with MLflow}}
 
-We tracked the full modeling workflow in \textbf{MLflow} using a local SQLite backend (\code{mlflow.db}) and file-based artifacts under \code{mlartifacts/}. That gave us one place to compare runs, check parameter settings, and retrieve the saved reports, predictions, and model files later.
+We tracked the full modeling workflow in \textbf{MLflow} the SQLite way (\code{mlflow.db}) and file-based artifacts under \code{mlartifacts/}.
 
 \subsection*{\textcolor{accentgold}{10.1 What Each Run Logs}}
 
 Each serious run stores the information required by the project brief:
 
 \begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
-    \item \textbf{Model identity and setup:} experiment name, run name, model family, algorithm, preprocessing choice, class-weight setting, optional SMOTE flag, and key hyperparameters.
-    \item \textbf{Technical metrics:} train, cross-validation, and/or holdout accuracy, balanced accuracy, macro F1, and weighted F1.
-    \item \textbf{Business metrics:} average misclassification cost and cost reduction relative to the \code{predict-all-on-time} operational baseline.
-    \item \textbf{Artifacts:} serialized model file when a fitted estimator exists, \code{evaluation\_report.json}, and exported holdout predictions CSV for downstream error analysis.
+    \item \textbf{Model identity and setup} experiment name, run name, model family, algorithm, preprocessing choice, class-weight setting, optional SMOTE flag, and key hyperparameters.
+    \item \textbf{Technical metrics} train, cross-validation, and/or holdout accuracy, balanced accuracy, macro F1, and weighted F1.
+    \item \textbf{Business metrics} average misclassification cost and cost reduction relative to the \code{predict-all-on-time} operational baseline.
+    \item \textbf{Artifacts} serialized model file when a fitted estimator exists, \code{evaluation\_report.json}, and exported test predictions CSV for downstream error analysis.
 \end{itemize}
 
-For the winning run \code{final-hist\_gradient\_boosting}, MLflow logged a balanced HistGradientBoostingClassifier with \code{max\_iter=2000}, \code{max\_leaf\_nodes=31}, \code{min\_samples\_leaf=20}, \code{learning\_rate=0.1}, and \code{61} selected features. It also stored the train, cross-validation, and holdout metrics along with two evaluation artifacts: \code{evaluation/evaluation\_report.json} and \code{evaluation/preds\_final-hist\_gradient\_boosting.csv}.
 
-\subsection*{\textcolor{accentgold}{10.2 Experiment Inventory}}
-
-\begin{tcolorbox}[mainbox, title={Tracked MLflow Experiments in the Repository}]
-\renewcommand{\arraystretch}{1.35}
-\small
-\begin{tabularx}{\textwidth}{L{4.1cm} X C{1.1cm}}
-    \toprule
-    \textbf{Experiment} & \textbf{Purpose} & \textbf{Runs} \\
-    \midrule
-    \code{flight-delay-baseline} & Initial baseline model runs and first MLflow integration. & 9 \\
-    \code{flight-delay-baseline-better-eval} & Main iterative experiment ladder with improved business-aware evaluation. & 36 \\
-    \code{flight-delay-baseline-freq-encoding} & Compare earlier feature engineering with frequency encoding. & 2 \\
-    \code{flight-delay-cv-test} & Validate cross-validation logging and comparison workflow. & 1 \\
-    \code{flight-delay-baseline-smote} & Early imbalance-handling experiments with SMOTE. & 3 \\
-    \code{flight-delay-hyperparameter-tuning} & Focused randomized search for the strongest tree-based families. & 5 \\
-    \code{flight-delay-feature-selection-ablation} & Test optional mutual-information feature filtering against the full feature matrix. & 8 \\
-    \code{flight-delay-feature-agg} & Evaluate richer route/context aggregation features. & 6 \\
-    \code{flight-delay-threshold-tuning} & Late-stage probability threshold experiments for business-aware decisions. & 2 \\
-    \code{flight-delay-final-model-selection} & Locked final comparison on the untouched holdout set. & 8 \\
-    \midrule
-    \multicolumn{2}{r}{\textbf{Total tracked runs}} & \textbf{80} \\
-    \bottomrule
-\end{tabularx}
-\end{tcolorbox}
+\subsection*{\textcolor{accentgold}{11.2 Experiments}}
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.98\textwidth]{figures/mlflow/mlflow_final_runs.png}
-    \caption{MLflow comparison page for the final model-selection runs. The figure shows the final candidates side by side with their tracked metrics.}
+    \caption{MLflow comparison page}
     \label{fig:mlflow-final-runs}
 \end{figure}
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.92\textwidth]{figures/mlflow/mlflow_expirments.png}
-    \caption{MLflow experiment list for the project, including baseline runs, feature ablations, tuning runs, threshold tuning, and the final model-selection experiment.}
+    \caption{MLflow experiment list}
     \label{fig:mlflow-experiments}
 \end{figure}
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.92\textwidth]{figures/mlflow/mlflow_final_runs_chart.png}
-    \caption{Chart view of the final MLflow runs. We used it to compare balanced accuracy against the supporting business metrics before locking the final choice.}
+    \caption{Chart view of the final MLflow runs}
     \label{fig:mlflow-final-runs-chart}
 \end{figure}
 
-\subsection*{\textcolor{accentgold}{10.3 Why MLflow Matters in This Project}}
+\subsection*{\textcolor{accentgold}{11.3 Why MLflow Matters in This Project}}
 
-MLflow mattered because the modeling pipeline changed several times during the project. We tried different feature sets, imbalance strategies, model families, and evaluation rules. Without tracked runs, it would have been too easy to mistake a noisy improvement for a real one, especially when some tuning results looked good in cross-validation and then weakened on holdout.
+MLflow mattered because the modeling pipeline changed several times during the project. We tried different feature sets, imbalance strategies, model families, and evaluation rules. Without tracked runs, it would have been too easy to mistake a bad improvement for a real one, especially when some tuning results looked good in cross-validation and then weakened on test (and other silly mistakes that we faced).
+
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Testing}}
