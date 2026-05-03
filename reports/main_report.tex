@@ -652,12 +652,156 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Model Development}}
 
-\textit{Placeholder: add model development content here.}
+This stage focused on a simple question: how well can we predict delay severity or cancelation before departure using the same cleaned inputs for every model? All final models were tested on the same untouched test split, and compared with the same primary metric, \textbf{balanced accuracy}. That choice matters here because the dataset is heavily imbalanced and plain accuracy mostly rewards models that keep predicting \code{on\_time}.
+
+We could have chosen easier metrics to achieve but they would have hurt the business more than benefited it.
+
+\subsection*{\textcolor{accentgold}{10.1 Final Benchmark Ladder}}
+
+\begin{tcolorbox}[mainbox, title={Candidate Models Used in the Locked Final Comparison}]
+\renewcommand{\arraystretch}{1.35}
+\small
+\begin{tabularx}{\textwidth}{L{3.6cm} L{3.2cm} X}
+    \toprule
+    \textbf{Model} & \textbf{Role} & \textbf{Why It Was Included} \\
+    \midrule
+    Majority baseline & Reference model & Sanity check class imbalance \\
+    Logistic regression (unbalanced) & Linear control & Shows what happens when the class distribution is left untreated \\
+    Logistic regression (balanced) & Linear reference model & First logical choice for our classification task \\
+    Random forest & Non-linear tree baseline & Captures non-linear interactions without feature scaling \\
+    Extra trees & Tree ensemble variant & Checks whether heavier tree randomization helps on this feature set \\
+    HistGradientBoosting & Main boosted-tree model & It's best used when we have dense tabular features and better minority-class recall  \\
+    Hierarchical HistGradientBoosting & Two-stage extension & Separates \code{on\_time} vs delayed first, then splits delayed flights by severity the idea that we were facing an issue on saperating on time from other classes) \\
+    XGBoost (balanced) & Additional boosted-tree benchmark & Tests whether XGBoost beats the other tree models. \\
+    \bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
+We also logged an exploratory balanced MLP (DL model) run during the experiments. It reached only \textbf{0.363 balanced accuracy} on the earlier runs, so we dropped.
+
+\subsection*{\textcolor{accentgold}{10.2 Simplified Modeling Pipeline Snapshot}}
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}[
+        node distance=0.65cm,
+        step/.style={
+            draw=accentblue,
+            rounded corners=2mm,
+            fill=boxbg,
+            text width=0.8\textwidth,
+            minimum height=1.05cm,
+            align=center,
+            drop shadow={black!15!white}
+        },
+        arr/.style={->, thick, draw=accentgold}
+    ]
+        \node[step] (clean) {Cleaned dataset};
+        \node[step, below=of clean] (split) {Stratified 80/20 split};
+        \node[step, below=of split] (feat) {Feature build };
+        \node[step, below=of feat] (adapt) {Model-specific adaptation};
+        \node[step, below=of adapt] (train) {Train candidate model class weighting, optional SMOTE, model-specific hyperparameters};
+        \node[step, below=of train] (cv) {Training-only validation stratified cross-validation};
+        \node[step, below=of cv] (eval) {Test evaluation};
+        \node[step, below=of eval] (mlflow) {MLflow logging and final ranking};
+
+        \draw[arr] (clean) -- (split);
+        \draw[arr] (split) -- (feat);
+        \draw[arr] (feat) -- (adapt);
+        \draw[arr] (adapt) -- (train);
+        \draw[arr] (train) -- (cv);
+        \draw[arr] (cv) -- (eval);
+        \draw[arr] (eval) -- (mlflow);
+    \end{tikzpicture}
+    \caption{Simplified model-development pipeline used for the final benchmark ladder.}
+    \label{fig:model-development-pipeline}
+\end{figure}
+
+\subsection*{\textcolor{accentgold}{10.3 Training, Validation, and Tuning Strategy}}
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \textbf{Train/Testing split:} the cleaned dataset was split with a class-stratified 80/20 way. The winning final run used \textbf{85,154 training rows}, \textbf{21,290 holdout rows}, and \textbf{61 feature columns}.
+    \item \textbf{Feature generation:} every model used the same core feature set: temporal features, route context, congestion proxies, weather intensity, frequency encodings, and train-only smoothed historical rates.
+    \item \textbf{Leakage control:} the train-only encodings were fit on the training partition and then applied to validation or holdout data with smoothing and fallbacks for unseen groups.
+    \item \textbf{Model-specific adaptation:} the histogram boosting models kept collapsing toward the majority class when the dense \code{\_historical\_} target-encoding columns stayed in the matrix. We removed those columns for \code{hist\_gradient\_boosting} and \code{hierarchical\_hist\_gradient\_boosting}, and that fixed the issue.
+    \item \textbf{Cross-validation:} inside training, we used stratified cross-validation to estimate generalization without touching the final testing set.
+    \item \textbf{Hyperparameter tuning:} randomized CV search was implemented on best models.
+\end{itemize}
+
+\subsection*{\textcolor{accentgold}{10.4 Final Model-Selection Rule}}
+
+Models were ranked by \textbf{balanced accuracy}, then tie-broken by \textbf{macro F1}, \textbf{average misclassification cost}, \textbf{cost reduction vs the on-time baseline}, and \textbf{weighted F1}. In practice, that meant we preferred models that still did useful work on the minority classes instead of just inflating overall accuracy.
+
+More on this part in the results and evaluation section.
+
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Experiment Tracking with MLflow}}
 
-\textit{Placeholder: add MLflow experiment tracking content here.}
+We tracked the full modeling workflow in \textbf{MLflow} using a local SQLite backend (\code{mlflow.db}) and file-based artifacts under \code{mlartifacts/}. That gave us one place to compare runs, check parameter settings, and retrieve the saved reports, predictions, and model files later.
+
+\subsection*{\textcolor{accentgold}{10.1 What Each Run Logs}}
+
+Each serious run stores the information required by the project brief:
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \textbf{Model identity and setup:} experiment name, run name, model family, algorithm, preprocessing choice, class-weight setting, optional SMOTE flag, and key hyperparameters.
+    \item \textbf{Technical metrics:} train, cross-validation, and/or holdout accuracy, balanced accuracy, macro F1, and weighted F1.
+    \item \textbf{Business metrics:} average misclassification cost and cost reduction relative to the \code{predict-all-on-time} operational baseline.
+    \item \textbf{Artifacts:} serialized model file when a fitted estimator exists, \code{evaluation\_report.json}, and exported holdout predictions CSV for downstream error analysis.
+\end{itemize}
+
+For the winning run \code{final-hist\_gradient\_boosting}, MLflow logged a balanced HistGradientBoostingClassifier with \code{max\_iter=2000}, \code{max\_leaf\_nodes=31}, \code{min\_samples\_leaf=20}, \code{learning\_rate=0.1}, and \code{61} selected features. It also stored the train, cross-validation, and holdout metrics along with two evaluation artifacts: \code{evaluation/evaluation\_report.json} and \code{evaluation/preds\_final-hist\_gradient\_boosting.csv}.
+
+\subsection*{\textcolor{accentgold}{10.2 Experiment Inventory}}
+
+\begin{tcolorbox}[mainbox, title={Tracked MLflow Experiments in the Repository}]
+\renewcommand{\arraystretch}{1.35}
+\small
+\begin{tabularx}{\textwidth}{L{4.1cm} X C{1.1cm}}
+    \toprule
+    \textbf{Experiment} & \textbf{Purpose} & \textbf{Runs} \\
+    \midrule
+    \code{flight-delay-baseline} & Initial baseline model runs and first MLflow integration. & 9 \\
+    \code{flight-delay-baseline-better-eval} & Main iterative experiment ladder with improved business-aware evaluation. & 36 \\
+    \code{flight-delay-baseline-freq-encoding} & Compare earlier feature engineering with frequency encoding. & 2 \\
+    \code{flight-delay-cv-test} & Validate cross-validation logging and comparison workflow. & 1 \\
+    \code{flight-delay-baseline-smote} & Early imbalance-handling experiments with SMOTE. & 3 \\
+    \code{flight-delay-hyperparameter-tuning} & Focused randomized search for the strongest tree-based families. & 5 \\
+    \code{flight-delay-feature-selection-ablation} & Test optional mutual-information feature filtering against the full feature matrix. & 8 \\
+    \code{flight-delay-feature-agg} & Evaluate richer route/context aggregation features. & 6 \\
+    \code{flight-delay-threshold-tuning} & Late-stage probability threshold experiments for business-aware decisions. & 2 \\
+    \code{flight-delay-final-model-selection} & Locked final comparison on the untouched holdout set. & 8 \\
+    \midrule
+    \multicolumn{2}{r}{\textbf{Total tracked runs}} & \textbf{80} \\
+    \bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\textwidth]{figures/mlflow/mlflow_final_runs.png}
+    \caption{MLflow comparison page for the final model-selection runs. The figure shows the final candidates side by side with their tracked metrics.}
+    \label{fig:mlflow-final-runs}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{figures/mlflow/mlflow_expirments.png}
+    \caption{MLflow experiment list for the project, including baseline runs, feature ablations, tuning runs, threshold tuning, and the final model-selection experiment.}
+    \label{fig:mlflow-experiments}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{figures/mlflow/mlflow_final_runs_chart.png}
+    \caption{Chart view of the final MLflow runs. We used it to compare balanced accuracy against the supporting business metrics before locking the final choice.}
+    \label{fig:mlflow-final-runs-chart}
+\end{figure}
+
+\subsection*{\textcolor{accentgold}{10.3 Why MLflow Matters in This Project}}
+
+MLflow mattered because the modeling pipeline changed several times during the project. We tried different feature sets, imbalance strategies, model families, and evaluation rules. Without tracked runs, it would have been too easy to mistake a noisy improvement for a real one, especially when some tuning results looked good in cross-validation and then weakened on holdout.
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Testing}}
@@ -667,7 +811,114 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Results \& Evaluation}}
 
-\textit{Placeholder: add results and evaluation content here.}
+The final evaluation used \textbf{two standard technical metrics} and \textbf{two business-oriented metrics} for every model. On the technical side, we focused on \textbf{balanced accuracy} and \textbf{macro F1}. On the business side, we used a misclassification-cost scheme that penalized missed disruption events more than false alarms: \code{on\_time}=0.5, \code{minor\_delay}=5, \code{major\_delay}=8, and \code{cancelled}=10 whenever the true class was predicted incorrectly.
+
+\subsection*{\textcolor{accentgold}{12.1 Final Model Comparison on the Locked Holdout Set}}
+
+\renewcommand{\arraystretch}{1.3}
+\small
+\begin{longtable}{L{3.6cm} C{1.35cm} C{1.45cm} C{1.35cm} C{1.7cm} C{1.8cm}}
+    \toprule
+    \textbf{Model} & \textbf{Accuracy} & \textbf{Bal. Acc.} & \textbf{Macro F1} & \textbf{Avg. Cost} & \textbf{Cost Reduction} \\
+    \midrule
+    \endhead
+    \rowcolor{accentblue!8}
+    HistGradientBoosting & \textbf{0.558} & \textbf{0.459} & 0.331 & \textbf{1.002} & \textbf{0.290} \\
+    Hierarchical HistGradientBoosting & 0.624 & 0.449 & \textbf{0.353} & 1.010 & 0.282 \\
+    Logistic Regression (balanced) & 0.447 & 0.438 & 0.281 & 1.015 & 0.277 \\
+    Extra Trees & 0.801 & 0.339 & 0.335 & 1.212 & 0.079 \\
+    XGBoost (balanced) & 0.088 & 0.307 & 0.097 & 1.133 & 0.159 \\
+    Random Forest & 0.807 & 0.294 & 0.290 & 1.263 & 0.029 \\
+    Logistic Regression (unbalanced) & 0.806 & 0.285 & 0.280 & 1.266 & 0.026 \\
+    Majority baseline & 0.805 & 0.250 & 0.223 & 1.292 & 0.000 \\
+    \bottomrule
+\end{longtable}
+\normalsize
+
+Three points stand out:
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \textbf{Accuracy alone is misleading.} The majority baseline, unbalanced logistic regression, random forest, and extra trees all exceed 0.80 plain accuracy because the dataset is dominated by \code{on\_time} flights. Their balanced accuracy is much worse, which means they fail minority classes more often than the raw accuracy suggests.
+    \item \textbf{HistGradientBoosting won the final comparison.} It achieved the highest holdout balanced accuracy (\textbf{0.459}) and the lowest average misclassification cost (\textbf{1.002}), while also giving the largest cost reduction (\textbf{0.290}) versus the \code{predict-all-on-time} baseline.
+    \item \textbf{The hierarchical model was competitive but not best under the primary objective.} It produced the highest macro F1 (\textbf{0.353}) and higher plain accuracy than the winner, but it still trailed the single-stage HistGradientBoosting model on balanced accuracy, which was the locked selection criterion.
+\end{itemize}
+
+\subsection*{\textcolor{accentgold}{12.2 Best Model Detailed Performance}}
+
+\begin{tcolorbox}[mainbox, title={Best Final Run: \code{final-hist\_gradient\_boosting}}]
+\renewcommand{\arraystretch}{1.35}
+\begin{tabularx}{\textwidth}{L{4.2cm} X}
+    \toprule
+    \textbf{Field} & \textbf{Value} \\
+    \midrule
+    Training rows / holdout rows & 85,154 / 21,290 \\
+    Selected feature columns & 61 \\
+    Holdout accuracy & 0.558 \\
+    Holdout balanced accuracy & \textbf{0.459} \\
+    Holdout macro F1 & 0.331 \\
+    Holdout weighted F1 & 0.624 \\
+    Average misclassification cost & \textbf{1.002} \\
+    Cost reduction vs on-time baseline & \textbf{0.290} absolute cost units \\
+    Train vs holdout balanced accuracy & 0.623 vs 0.459 (moderate overfitting, but still best generalization among final candidates) \\
+    \bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{L{2.7cm} C{1.5cm} C{1.5cm} C{1.4cm} C{1.5cm}}
+    \toprule
+    \textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
+    \midrule
+    On Time & 0.890 & 0.611 & 0.725 & 17,135 \\
+    Minor Delay & 0.162 & 0.325 & 0.217 & 2,141 \\
+    Major Delay & 0.149 & 0.295 & 0.198 & 1,670 \\
+    Cancelled & 0.108 & \textbf{0.605} & 0.183 & 344 \\
+    \bottomrule
+\end{tabularx}
+
+In practice, the best model works like a \textbf{triage model}. It is useful when the goal is to catch severe events, especially cancellations, but it pays for that sensitivity with many false alarms on flights that were actually on time.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\textwidth]{figures/err_analysis/best_run_error_scorecard.png}
+    \caption{Scorecard for the winning run, combining the main holdout metrics with per-class precision, recall, and F1 for the four delay classes.}
+    \label{fig:best-run-scorecard}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\textwidth]{figures/err_analysis/best_run_confusion_matrices.png}
+    \caption{Confusion-count and class-normalized confusion matrices for the winning HistGradientBoosting model.}
+    \label{fig:best-run-confusion}
+\end{figure}
+
+\subsection*{\textcolor{accentgold}{12.3 Error Analysis and Business Interpretation}}
+
+The winning run made \textbf{9,415 errors} on the 21,290-flight holdout set, which gives an overall error rate of \textbf{44.2\%}. The weakest class by recall was \textbf{major delay} (29.5\%). The strongest minority-event class was \textbf{cancelled} (60.5\%). Most of the mistakes came from \textbf{over-predicting disruption} rather than missing every disruption case entirely. The three most common confusion pairs were:
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \code{on\_time \rightarrow minor\_delay}: 3,101 cases, or \textbf{32.9\%} of all errors
+    \item \code{on\_time \rightarrow major\_delay}: 2,270 cases, or \textbf{24.1\%} of all errors
+    \item \code{on\_time \rightarrow cancelled}: 1,286 cases, or \textbf{13.7\%} of all errors
+\end{itemize}
+
+For the stakeholder, this means the model is \textbf{useful for pre-departure prioritization}. It catches a meaningful share of the major disruption cases and reduces cost relative to an \code{all-on-time} rule. Still, it should be treated as a \textbf{decision-support signal}, not as a fully automated trigger, because the false-positive rate on nominally on-time flights is still high.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.88\textwidth]{figures/err_analysis/best_run_confusion_pairs.png}
+    \caption{Largest confusion pairs for the winning run. Most errors came from flights that were actually on time but were predicted as minor, major, or cancelled disruptions.}
+    \label{fig:best-run-confusion-pairs}
+\end{figure}
+
+The slice-level analysis pointed to the same weak spots. The model was least reliable on \textbf{severe-weather slices} and on the \textbf{evening departure bank}. The worst large-volume segment was \code{departure\_hour\_bucket\_code = 4} (the evening bank), where the error rate reached \textbf{67.1\%} across \textbf{4,050 flights}. Several severe-weather codes at origin or destination also produced error rates above \textbf{70\%} on slices with at least 150 samples. Weather is still the hardest operating regime for the current feature set.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figures/err_analysis/best_run_error_slices.png}
+    \caption{Highest-error large slices for the winning run. The worst segments cluster around severe-weather codes and the evening departure bank.}
+    \label{fig:best-run-error-slices}
+\end{figure}
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Code Automation}}
@@ -682,7 +933,30 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Limitations \& Future Work}}
 
-\textit{Placeholder: add limitations and future work content here.}
+\subsection*{\textcolor{accentgold}{14.1 Current Limitations}}
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \textbf{Single-year data scope:} the project is based on 2015 domestic US flights only. Seasonal patterns are represented, but cross-year drift and post-2015 operational changes are not validated.
+    \item \textbf{Sampled rather than full BTS scale:} the pipeline intentionally works on a reproducible 2\% stratified sample for tractability. This keeps the project manageable, but the learned decision boundaries may miss rare patterns visible only at full scale.
+    \item \textbf{Historical weather is easier than forecast weather:} the current feature source uses historical weather observations. A real deployment would depend on forecast data available before departure, which is noisier and may reduce real-world performance.
+    \item \textbf{Important upstream operational signals are absent:} the model does not include aircraft rotation history, previous-leg lateness, crew constraints, gate assignment pressure, or live NAS/ATC congestion feeds. Those are often crucial drivers of major delays.
+    \item \textbf{Random holdout, not chronological backtesting:} the final benchmark uses an honest untouched holdout, but it is still class-stratified random rather than a purely time-ordered split. This is weaker than a production-style forward-chaining evaluation.
+    \item \textbf{Minority-class precision remains low:} the winning model improves recall for disruption events, especially cancellations, but it over-predicts disruption on many flights that are actually on time. That limits direct automation.
+    \item \textbf{Tuning results were not uniformly stable:} some exploratory tuning runs looked promising in cross-validation yet did not survive the full honest holdout comparison. The project handled this correctly by locking final selection to the dedicated holdout experiment, but it still highlights that the problem remains hard and somewhat unstable.
+\end{itemize}
+
+\subsection*{\textcolor{accentgold}{14.2 Future Work}}
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item Replace historical weather observations with \textbf{true pre-departure forecasts} so the deployed feature set matches the information available at decision time.
+    \item Add \textbf{upstream rotation and delay-propagation features}, especially aircraft tail history, inbound-leg delay, and airport turnaround pressure.
+    \item Validate the system with \textbf{time-based backtesting across multiple years} to measure drift and operational robustness more realistically.
+    \item Continue \textbf{cost-sensitive threshold tuning and probability calibration} so different stakeholders can trade off false alarms against missed disruption events explicitly.
+    \item Incorporate richer external signals such as \textbf{NAS congestion, airport traffic, and severe-weather alerts} to improve major-delay discrimination.
+    \item Build a lightweight \textbf{stakeholder-facing dashboard} that surfaces predicted class, confidence, and recommended operational action rather than exposing raw model outputs only.
+\end{itemize}
+
+In short, the current system is already strong enough to support \textbf{prioritization and early warning}, but not strong enough for full operational automation. The next project iteration should focus less on adding more model families and more on improving feature realism, temporal validation, and decision-threshold calibration.
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Team Contributions}}
