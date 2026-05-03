@@ -42,7 +42,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\textcolor{accentblue}{\textbf{Team 5}}}
-\fancyhead[C]{\textcolor{secondarygrey}{Phase 1 - Proposal \& Dataset Validation Report}}
+\fancyhead[C]{\textcolor{secondarygrey}{Flight Delay Classification Report}}
 \fancyhead[R]{}
 \fancyfoot[C]{\textcolor{accentgold}{\thepage}}
 \renewcommand{\headrulewidth}{1pt}
@@ -113,8 +113,8 @@
             \parbox{0.8\textwidth}{
                 \centering
                 \vspace{0.5cm}
-                {\fontsize{28}{34}\selectfont \textcolor{accentblue}{\textbf{Phase 1 - Proposal \&}} \par}
-                {\fontsize{28}{34}\selectfont \textcolor{accentblue}{\textbf{Dataset Validation Report}} \par}
+                {\fontsize{28}{34}\selectfont \textcolor{accentblue}{\textbf{Flight Delay Classification}} \par}
+                {\fontsize{28}{34}\selectfont \textcolor{accentblue}{\textbf{Report}} \par}
                 \vspace{0.3cm}
                 {\fontsize{22}{28}\selectfont \textcolor{accentgold}{\textbf{Team 5}} \par}
                 \vspace{0.5cm}
@@ -310,7 +310,7 @@ The classification target is derived from the \code{DEPARTURE\_DELAY} column (mi
 \end{tcolorbox}
 
 \vspace{0.5em}
-\textbf{11 Weather Variables Retrieved (per airport, per hour):}
+\textbf{Weather Variables Retrieved (per airport, per hour):}
 
 \begin{tcolorbox}[mainbox, title={Weather Feature Descriptions}]
 \renewcommand{\arraystretch}{1.3}
@@ -640,16 +640,128 @@ All (MONTH, DAY) combinations are valid calendar dates for 2015. No invalid date
 \end{tcolorbox}
 
 % ════════════════════════════════════════════
-\section{\textcolor{accentblue}{Preprocessing, Transformation \& Engineering}}
+\section{\textcolor{accentblue}{Preprocessing}}
 
-\textit{Placeholder: add preprocessing, transformation, and feature engineering content here.}
+The preprocessing pipeline consists of several sequential transformations applied to the raw merged flight and weather dataset.
+
+\subsection*{\textcolor{accentgold}{8.1 Removal of Data Leakage and Identifiers}}
+To prevent data leakage, all post-departure variables that would not be available at the time of prediction were removed. The exact features that were excluded during this stage and the rationale behind their removal are outlined below.
+
+\begin{tcolorbox}[mainbox, title={Dropped Leakage and Identifier Columns}]
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{L{5cm} X}
+    \toprule
+    \textbf{Dropped Column} & \textbf{Reason for Removal} \\
+    \midrule
+    \code{FLIGHT\_NUMBER} & Not relevant. \\
+    \code{TAIL\_NUMBER} & Not relevant. \\
+    \code{DEPARTURE\_TIME} & Target leakage. \\
+    \code{ARRIVAL\_TIME} & Target leakage. \\
+    \code{WHEELS\_OFF} & Target leakage. \\
+    \code{WHEELS\_ON} & Target leakage. \\
+    \code{ELAPSED\_TIME} & Target leakage. \\
+    \code{AIR\_TIME} & Target leakage. \\
+    \code{TAXI\_OUT} & Target leakage. \\
+    \code{TAXI\_IN} & Target leakage. \\
+    \code{ARRIVAL\_DELAY} & Not a pre-departure feature. \\
+    \code{AIR\_SYSTEM\_DELAY} & Delay breakdown (target leakage). \\
+    \code{SECURITY\_DELAY} & Delay breakdown (target leakage). \\
+    \code{AIRLINE\_DELAY} & Delay breakdown (target leakage). \\
+    \code{LATE\_AIRCRAFT\_DELAY} & Delay breakdown (target leakage). \\
+    \code{WEATHER\_DELAY} & Delay breakdown (target leakage). \\
+    \bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
+
+
+\subsection*{\textcolor{accentgold}{8.2 Target Variable Creation}}
+The primary objective of the classification model is to predict the severity of flight delays. A new target variable, \texttt{DELAY\_CATEGORY}, was engineered based on the continuous \texttt{DEPARTURE\_DELAY} and the \texttt{CANCELLED} binary indicator:
+\begin{itemize}
+    \item \textbf{On Time:} Flights departing up to 15 minutes after the scheduled time (adhering to the standard FAA definition of on-time performance).
+    \item \textbf{Minor Delay:} Flights delayed between 16 and 45 minutes.
+    \item \textbf{Major Delay:} Flights delayed for more than 45 minutes.
+    \item \textbf{Cancelled:} Flights explicitly marked as cancelled in the original dataset.
+\end{itemize}
+Any rows lacking sufficient data to be categorized into one of these four discrete classes were subsequently dropped.
+
+\subsection*{\textcolor{accentgold}{8.3 Data Cleaning and Filtering}}
+Several data quality checks and filtering mechanisms were applied to ensure the integrity of the feature space:
+\begin{itemize}
+    \item \textbf{Invalid Airport Codes:} Records containing numeric IATA airport codes (e.g., \texttt{12345}) were discarded, as they indicate corrupted or incorrectly mapped origin or destination data.
+    \item \textbf{Null Handling:} Any residual rows containing null values in mandatory feature columns were removed to ensure dataset completeness. Exceptions were made for conditionally null columns such as \texttt{CANCELLATION\_REASON}, which are logically empty for completed flights.
+\end{itemize}
+
+\subsection*{\textcolor{accentgold}{8.4 Outlier Treatment}}
+To improve the robustness of downstream machine learning models against extreme, unrepresentative values, statistical outlier capping was performed. Continuous numeric features-such as \texttt{DISTANCE}, \texttt{SCHEDULED\_TIME}, and weather-related metrics (\texttt{temperature\_c}, \texttt{wind\_speed\_kmh})-were capped at their 1st and 99th percentiles.
+
+\subsection*{\textcolor{accentgold}{8.5 Post-Cleaning Validation}}
+As a final step, the preprocessed dataset was automatically passed through a secondary validation suite. This ensured that no residual nulls existed in the feature space and that all values adhered to expected logical ranges before the data was serialized and passed to the feature engineering phase.
+
+\newpage
+
+% ════════════════════════════════════════════
+\section{\textcolor{accentblue}{Transformation \& Engineering}}
+
+We performed an extensive feature engineering pipeline. We enriched the dataset by engineering temporal variables, interaction keys, operational congestion ratios, and smoothed historical target encodings. To ensure numerical stability for gradient-descent, a \code{StandardScaler} was subsequently applied within the modeling pipeline.
+
+The complete list of engineered features is detailed in the table below.
+
+\begin{tcolorbox}[mainbox, title={Engineered Features}]
+\renewcommand{\arraystretch}{1.3}
+\begin{longtable}{L{6cm} L{1.5cm} p{6cm}}
+    \toprule
+    \textbf{Feature} & \textbf{Type} & \textbf{Description} \\
+    \midrule
+    \endhead
+    % Temporal
+    \code{is\_weekend} & int & 1 if flight is on Saturday or Sunday \\
+    \code{is\_holiday} & int & 1 if flight falls on a US Federal Holiday \\
+    \code{scheduled\_departure\_hour\_sin} \newline \code{scheduled\_departure\_hour\_cos} & float & Cyclical sine/cosine encoding of scheduled departure hour \\
+    \code{scheduled\_arrival\_hour\_sin} \newline \code{scheduled\_arrival\_hour\_cos} & float & Cyclical sine/cosine encoding of scheduled arrival hour \\
+    \code{month\_sin} \newline \code{month\_cos} & float & Cyclical sine/cosine encoding of flight month \\
+    \code{departure\_hour\_bucket} & str & Discretized bucket (e.g., morning, midday) \\
+    \code{departure\_hour\_bucket\_code} & int & Numeric label of departure\_hour\_bucket \\
+    \code{is\_morning\_peak\_bank} & int & 1 if departure hour is in 06:00 and 09:00 \\
+    \code{is\_evening\_peak\_bank} & int & 1 if departure hour is in 16:00 and 19:00 \\
+    
+    % Interaction Keys
+    \code{ROUTE} & str & Concatenation of Origin and Destination \\
+    \code{AIRLINE\_DEPARTURE\_BANK} & str & Airline concatenated with departure bucket \\
+    \code{ORIGIN\_AIRPORT\_DEPARTURE\_BANK} & str & Origin concatenated with departure bucket \\
+    \code{ORIGIN\_AIRPORT\_DAY\_OF\_WEEK} & str & Origin concatenated with day of week \\
+    \code{AIRLINE\_ROUTE} & str & Airline concatenated with route \\
+    \code{ROUTE\_DEPARTURE\_BANK} & str & Route concatenated with departure bucket \\
+    \code{ROUTE\_DAY\_OF\_WEEK} & str & Route concatenated with day of week \\
+
+    % Congestion
+    \code{*\_count} \newline \textit{(e.g., origin\_hourly\_departure\_count)} & int & Hourly or bank departure/arrival volume counts for specific locations \\
+    \code{*\_ratio} \newline \textit{(e.g., origin\_congestion\_ratio)} & float & Ratio of current traffic volume to the historical mean volume \\
+
+    % Weather & Interaction
+    \code{*\_weather\_intensity} & float & Composite weather severity score \\
+    \code{*\_weather\_score} \newline \textit{(e.g., route\_congestion\_weather\_score)} & float & Interaction term: local congestion ratio $\times$ local weather intensity \\
+
+    % Encodings
+    \code{*\_freq} & float & Frequency encoding to represent the volume of specific routing columns \\
+    \code{*\_historical\_*\_rate} \newline \textit{} & float & Smoothed, leave-one-out historical probability of a specific delay class for a specific entity \\
+    \bottomrule
+\end{longtable}
+\end{tcolorbox}
+
+\subsection*{\textcolor{accentgold}{9.1 Feature selection tried}} 
+
+We also tried a small \textbf{filter-based feature-selection step} during training. The method was \textbf{mutual information}: each feature was scored against the training labels, and only columns above a minimum threshold were kept. In code, this was implemented as an optional \code{mutual\_info} mode with a default \code{min\_mutual\_info} threshold of \code{0.001}. If no column passed the threshold, the pipeline kept the single best varying feature as a fallback.
+
+We kept this as an experiment rather than making it part of the final default pipeline. In the ablation runs, the mutual-information filter gave only negligible changes and did not consistently improve test performance. For example, HistGradientBoosting stayed slightly better without it (balanced accuracy about \textbf{0.378} without selection vs \textbf{0.373} with mutual information), while balanced logistic regression changed only marginally (about \textbf{0.396} without selection vs \textbf{0.397} with it). Because the gain was small and inconsistent, the final system relied more on \textbf{feature engineering plus model-specific feature adaptation} than on aggressive column pruning.
+
+
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Exploratory Data Analysis (EDA)}}
-
 The EDA was done on the cleaned modeling dataset with \textbf{106,444 rows} and \textbf{38 columns}. The goal was not only to describe the data, but to answer the questions that matter before modeling: how severe the class imbalance is, which features appear useful, where delays concentrate, and which columns look redundant or need special treatment.
 
-\subsection*{\textcolor{accentgold}{9.1 Target Distribution}}
+\subsection*{\textcolor{accentgold}{10.1 Target Distribution}}
 
 \begin{figure}[H]
     \centering
@@ -658,9 +770,9 @@ The EDA was done on the cleaned modeling dataset with \textbf{106,444 rows} and 
     \label{fig:eda-target-distribution}
 \end{figure}
 
-The first thing the notebook makes clear is that the task is strongly imbalanced. About \textbf{80.5\%} of flights are \code{on\_time}, while \code{minor\_delay}, \code{major\_delay}, and \code{cancelled} make up the much smaller remainder. That matters immediately for modeling. A classifier can get a deceptively high accuracy score (foreshadowing) just by staying close to the majority class, which is exactly why balanced metrics and business-aware costs were needed later.
+The first thing the eda makes clear is that the task is strongly imbalanced. About \textbf{80.5\%} of flights are \code{on\_time}, while \code{minor\_delay}, \code{major\_delay}, and \code{cancelled} make up the much smaller remainder. That matters immediately for modeling. A classifier can get a deceptively high accuracy score (foreshadowing) just by staying close to the majority class, which is exactly why balanced metrics and business-aware costs were needed later.
 
-\subsection*{\textcolor{accentgold}{9.2 Flight Activity Context}}
+\subsection*{\textcolor{accentgold}{10.2 Flight Activity Context}}
 
 \begin{figure}[H]
     \centering
@@ -671,7 +783,7 @@ The first thing the notebook makes clear is that the task is strongly imbalanced
 
 This figure gives the basic operating context of the dataset. Southwest (\code{WN}) is the largest airline by volume in the sample, while airports such as \code{ATL}, \code{ORD}, \code{DFW}, and \code{DEN} dominate the origin counts.
 
-\subsection*{\textcolor{accentgold}{9.3 Delay Mix by Airline and Month}}
+\subsection*{\textcolor{accentgold}{10.3 Delay Mix by Airline and Month}}
 
 \begin{figure}[H]
     \centering
@@ -680,9 +792,9 @@ This figure gives the basic operating context of the dataset. Southwest (\code{W
     \label{fig:eda-delay-proportion-group}
 \end{figure}
 
-Raw counts hide too much because \code{on\_time} dominates the dataset, so the notebook switched to within-group proportions. That view is much more useful. Some airlines, especially \code{NK} and \code{F9}, carry a visibly larger share of \code{major\_delay} and \code{cancelled} flights than the stronger carriers. The month view shows a similar pattern: winter months such as \textbf{January, February, and December} are worse, and \textbf{June and July} also show elevated disruption. These plots justified keeping airline and calendar features in the modeling pipeline.
+Raw counts hide too much because \code{on\_time} dominates the dataset, so the eda switched to within-group proportions. That view is much more useful. Some airlines, especially \code{NK} and \code{F9}, carry a visibly larger share of \code{major\_delay} and \code{cancelled} flights than the stronger carriers. The month view shows a similar pattern: winter months such as \textbf{January, February, and December} are worse, and \textbf{June and July} also show elevated disruption. These plots justified keeping airline and calendar features in the modeling pipeline.
 
-\subsection*{\textcolor{accentgold}{9.4 Delay Rate by Departure Hour}}
+\subsection*{\textcolor{accentgold}{10.4 Delay Rate by Departure Hour}}
 
 \begin{figure}[H]
     \centering
@@ -693,7 +805,7 @@ Raw counts hide too much because \code{on\_time} dominates the dataset, so the n
 
 Departure hour turned out to be one of the clearest temporal signals in the notebook. Flights leaving between roughly \textbf{14:00 and 22:00} have the highest not-on-time rate, while early-morning departures, especially around \textbf{05:00 to 07:00}, are the most reliable. That fits the usual delay-propagation story: once the day gets busy, late aircraft, gate pressure, and congestion start to compound. This is one of the main reasons we kept \code{departure\_hour} and later engineered time-based features around it.
 
-\subsection*{\textcolor{accentgold}{9.5 Numerical Features vs the Target}}
+\subsection*{\textcolor{accentgold}{10.5 Numerical Features vs the Target}}
 
 \begin{figure}[H]
     \centering
@@ -704,7 +816,7 @@ Departure hour turned out to be one of the clearest temporal signals in the note
 
 The notebook's box-plot analysis showed a few useful patterns, even though none of them by themselves cleanly separate the classes. Flights with \code{major\_delay} or \code{cancelled} labels tend to have slightly \textbf{longer scheduled times and distances}. Delayed and cancelled flights also tend to leave \textbf{later in the day}, which supports the departure-hour result above. Weather variables were mixed: temperature alone did not separate the classes much, but \textbf{cloud cover} and some wind-related variables were slightly worse for delayed and cancelled flights.
 
-\subsection*{\textcolor{accentgold}{9.6 Correlation Analysis and Redundancy}}
+\subsection*{\textcolor{accentgold}{10.6 Correlation Analysis and Redundancy}}
 
 \begin{figure}[H]
     \centering
@@ -715,7 +827,7 @@ The notebook's box-plot analysis showed a few useful patterns, even though none 
 
 The target correlation stayed weak across all individual features \textbf{the problem is not strongly linear}, and feature interactions matter more than any single raw column.
 
-\subsection*{\textcolor{accentgold}{9.7 EDA Takeaways That Affected Modeling}}
+\subsection*{\textcolor{accentgold}{10.7 EDA Takeaways That Affected Modeling}}
 
 The EDA directly shaped the modeling choices used later in the project:
 
@@ -725,6 +837,7 @@ The EDA directly shaped the modeling choices used later in the project:
     \item Weak linear target correlations suggested that non-linear models would likely outperform a purely linear baseline once the feature representation improved.
 \end{itemize}
 
+
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Model Development}}
 
@@ -732,7 +845,7 @@ This stage focused on a simple question: how well can we predict delay severity 
 
 We could have chosen easier metrics to achieve but they would have hurt the business more than benefited it.
 
-\subsection*{\textcolor{accentgold}{10.1 Final Benchmark Ladder}}
+\subsection*{\textcolor{accentgold}{11.1 Final Benchmark Ladder}}
 
 \begin{tcolorbox}[mainbox, title={Candidate Models Used in the Locked Final Comparison}]
 \renewcommand{\arraystretch}{1.35}
@@ -742,20 +855,20 @@ We could have chosen easier metrics to achieve but they would have hurt the busi
     \textbf{Model} & \textbf{Role} & \textbf{Why It Was Included} \\
     \midrule
     Majority baseline & Reference model & Sanity check class imbalance \\
-    Logistic regression (unbalanced) & Linear control & Shows what happens when the class distribution is left untreated \\
+    Logistic regression (unbalanced) & Linear test & Shows what happens when the class distribution is left untreated \\
     Logistic regression (balanced) & Linear reference model & First logical choice for our classification task \\
     Random forest & Non-linear tree baseline & Captures non-linear interactions without feature scaling \\
     Extra trees & Tree ensemble variant & Checks whether heavier tree randomization helps on this feature set \\
     HistGradientBoosting & Main boosted-tree model & It's best used when we have dense tabular features and better minority-class recall  \\
     Hierarchical HistGradientBoosting & Two-stage extension & Separates \code{on\_time} vs delayed first, then splits delayed flights by severity the idea that we were facing an issue on saperating on time from other classes) \\
-    XGBoost (balanced) & Additional boosted-tree benchmark & Tests whether XGBoost beats the other tree models. \\
+    XGBoost (balanced) & Additional boosted-tree test & Tests whether XGBoost beats the other tree models. \\
     \bottomrule
 \end{tabularx}
 \end{tcolorbox}
 
 We also logged an exploratory balanced MLP (DL model) run during the experiments. It reached only \textbf{0.363 balanced accuracy} on the earlier runs, so we dropped.
 
-\subsection*{\textcolor{accentgold}{10.2 Simplified Modeling Pipeline Snapshot}}
+\subsection*{\textcolor{accentgold}{11.2 Simplified Modeling Pipeline Snapshot}}
 
 \begin{figure}[H]
     \centering
@@ -793,7 +906,7 @@ We also logged an exploratory balanced MLP (DL model) run during the experiments
     \label{fig:model-development-pipeline}
 \end{figure}
 
-\subsection*{\textcolor{accentgold}{10.3 Training, Validation, and Tuning Strategy}}
+\subsection*{\textcolor{accentgold}{11.3 Training, Validation, and Tuning Strategy}}
 
 \begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
     \item \textbf{Train/Testing split:} the cleaned dataset was split with a class-stratified 80/20 way. The winning final run used \textbf{85,154 training rows}, \textbf{21,290 holdout rows}, and \textbf{61 feature columns}.
@@ -804,19 +917,18 @@ We also logged an exploratory balanced MLP (DL model) run during the experiments
     \item \textbf{Hyperparameter tuning:} randomized CV search was implemented on best models.
 \end{itemize}
 
-\subsection*{\textcolor{accentgold}{10.4 Final Model-Selection Rule}}
+\subsection*{\textcolor{accentgold}{11.4 Final Model-Selection Rule}}
 
 Models were ranked by \textbf{balanced accuracy}, then tie-broken by \textbf{macro F1}, \textbf{average misclassification cost}, \textbf{cost reduction vs the on-time baseline}, and \textbf{weighted F1}. In practice, that meant we preferred models that still did useful work on the minority classes instead of just inflating overall accuracy.
 
 More on this part in the results and evaluation section.
-
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Experiment Tracking with MLflow}}
 
 We tracked the full modeling workflow in \textbf{MLflow} the SQLite way (\code{mlflow.db}) and file-based artifacts under \code{mlartifacts/}.
 
-\subsection*{\textcolor{accentgold}{10.1 What Each Run Logs}}
+\subsection*{\textcolor{accentgold}{12.1 What Each Run Logs}}
 
 Each serious run stores the information required by the project brief:
 
@@ -828,7 +940,7 @@ Each serious run stores the information required by the project brief:
 \end{itemize}
 
 
-\subsection*{\textcolor{accentgold}{11.2 Experiments}}
+\subsection*{\textcolor{accentgold}{12.2 Experiments}}
 
 \begin{figure}[H]
     \centering
@@ -851,7 +963,7 @@ Each serious run stores the information required by the project brief:
     \label{fig:mlflow-final-runs-chart}
 \end{figure}
 
-\subsection*{\textcolor{accentgold}{11.3 Why MLflow Matters in This Project}}
+\subsection*{\textcolor{accentgold}{12.3 Why MLflow Matters}}
 
 MLflow mattered because the modeling pipeline changed several times during the project. We tried different feature sets, imbalance strategies, model families, and evaluation rules. Without tracked runs, it would have been too easy to mistake a bad improvement for a real one, especially when some tuning results looked good in cross-validation and then weakened on test (and other silly mistakes that we faced).
 
@@ -859,14 +971,21 @@ MLflow mattered because the modeling pipeline changed several times during the p
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Testing}}
 
-\textit{Placeholder: add testing content here.}
+The project brief asks for unit tests, integration tests, coverage, and a short discussion of issues found. This section follows that structure. The repository uses \textbf{pytest}, and the latest validation run finished with \textbf{30 passing tests} and \textbf{51\% total line coverage} across the Python package.
+
+
+\subsection*{\textcolor{accentgold}{13.2 Unit and Integration Test Coverage}}
+
+Most tests are \textbf{unit-style checks} built on small synthetic data frames. That made it easier to isolate edge cases and check the exact rules we care about, such as where \code{on\_time} becomes \code{minor\_delay}, or whether historical-rate features are built from the train split without leaking target information.
+
+The suite also includes \textbf{integration-style checks} around the modeling pipeline. The training tests run the full \code{train\_and\_log\_model} path on temporary artifacts and check that it writes the expected model file, JSON evaluation output, predictions CSVs, tracking database, and MLflow artifacts. 
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Results \& Evaluation}}
 
 The final evaluation used technical metrics and business metrics side by side. We kept the usual classification scores, but we did not want the report to stop at them because this is an imbalanced problem and some mistakes matter much more than others. On the business side, we used a simple misclassification-cost scheme that makes missed disruption events more expensive than false alarms
 
-\subsection*{\textcolor{accentgold}{13.0 Why These Metrics Were Used}}
+\subsection*{\textcolor{accentgold}{14.0 Why These Metrics Were Used}}
 
 \begin{tcolorbox}[mainbox, title={What Each Metric Tells Us}]
 \renewcommand{\arraystretch}{1.35}
@@ -889,13 +1008,13 @@ The final evaluation used technical metrics and business metrics side by side. W
 The business-cost weights were chosen to match what these mistakes mean in operations. A false alarm on an \code{on\_time} flight has a small cost because it may trigger extra monitoring or passenger messages, but it usually does not disrupt the day badly. Missing a \code{minor\_delay} is more expensive because updates start late and connection handling gets weaker. Missing a \code{major\_delay} is worse. Missing a \code{cancelled} flight has the highest cost because the airline loses precious time on the most urgent disruption response.
 
 
-\subsection*{\textcolor{accentgold}{13.1 Final Model Comparison on the Locked Holdout Set}}
+\subsection*{\textcolor{accentgold}{14.1 Final Model Comparison on the Locked Holdout Set}}
 
 \renewcommand{\arraystretch}{1.3}
 \small
 \begin{longtable}{L{3.9cm} C{1.2cm} C{1.35cm} C{1.2cm} C{1.35cm} C{1.55cm} C{1.65cm}}
     \toprule
-    \textbf{Model} & \textbf{Train Acc.} & \textbf{Train Bal. Acc.} & \textbf{Holdout Acc.} & \textbf{Holdout Bal. Acc.} & \textbf{Avg. Cost} & \textbf{Cost Reduction} \\
+    \textbf{Model} & \textbf{Train Acc.} & \textbf{Train Bal. Acc.} & \textbf{Test Acc.} & \textbf{Test Bal. Acc.} & \textbf{Avg. Cost} & \textbf{Cost Reduction} \\
     \midrule
     \endhead
     \rowcolor{accentblue!8}
@@ -920,7 +1039,7 @@ Three points stand out:
     \item \textbf{The hierarchical model was competitive but not best under the primary objective.} It gave the highest macro F1 (\textbf{0.353}) and higher plain accuracy than the winner, but it still was worse than the single-stage HistGradientBoosting model on balanced accuracy, which was the locked selection criterion.
 \end{itemize}
 
-\subsection*{\textcolor{accentgold}{13.2 Best Model Detailed Performance}}
+\subsection*{\textcolor{accentgold}{14.2 Best Model Detailed Performance}}
 
 \begin{tcolorbox}[mainbox, title={Best Final Run: \code{final-hist\_gradient\_boosting}}]
 \renewcommand{\arraystretch}{1.35}
@@ -934,7 +1053,7 @@ Three points stand out:
     Test weighted F1 & 0.624 \\
     Average misclassification cost & \textbf{1.002} \\
     Cost reduction vs on-time baseline & \textbf{0.290} absolute cost units \\
-    Train vs holdout balanced accuracy & 0.623 vs 0.459 (slight overfitting, but still best generalization among final candidates) \\
+    Train vs test balanced accuracy & 0.623 vs 0.459 (slight overfitting, but still best generalization among final candidates) \\
     \bottomrule
 \end{tabularx}
 \end{tcolorbox}
@@ -967,7 +1086,7 @@ Three points stand out:
     \label{fig:best-run-confusion}
 \end{figure}
 
-\subsection*{\textcolor{accentgold}{13.3 Error Analysis and Business Interpretation}}
+\subsection*{\textcolor{accentgold}{14.3 Error Analysis and Business Interpretation}}
 
 Most of the mistakes came from \textbf{over-predicting disruption} rather than missing every disruption case entirely. The three most common confusion pairs were:
 
@@ -989,18 +1108,37 @@ For the stakeholder, this means the model is \textbf{useful for pre-departure pr
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Code Automation}}
 
-\textit{Placeholder: add code automation content here.}
+The project was structured so that the main workflow can be reproduced from the command line without manually editing notebooks or changing paths inside the code. We kept the automation simple on purpose: each stage of the pipeline is exposed either as a \textbf{Make target} or as a \textbf{Python CLI entrypoint}.
+
+\subsection*{\textcolor{accentgold}{15.1 Makefile-Based Pipeline Automation}}
+
+The first automation layer is the project \code{Makefile}. It defines the common development commands used throughout the semester, including environment setup, linting, formatting, testing, and the main data-to-model pipeline. The project rules are chained in dependency order, so commands such as \code{make train} or \code{make evaluate} automatically execute the upstream steps first. In practice, that means the workflow moves in a consistent sequence:
+
+\begin{center}
+\code{requirements $\rightarrow$ data $\rightarrow$ features $\rightarrow$ train $\rightarrow$ evaluate}
+\end{center}
+
+The same Makefile also includes \code{make lint}, \code{make format}, \code{make test}, and \code{make mlflow-ui}, so local quality checks and experiment inspection use the same interface as the modeling steps instead of relying on ad hoc terminal commands.
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Continuous Integration}}
 
-\textit{Placeholder: add continuous integration content here.}
+
+\subsection*{\textcolor{accentgold}{16.1 Current CI Workflow}}
+
+\begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
+    \item \code{poetry run make lint}
+    \item \code{poetry run make test}
+\end{itemize}
+
+This means each pull request is checked for both \textbf{code quality} and \textbf{basic behavioral correctness}. 
+
 
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Limitations \& Future Work}}
 
 
-\subsection*{\textcolor{accentgold}{16.1 Current Limitations}}
+\subsection*{\textcolor{accentgold}{17.1 Current Limitations}}
 
 \begin{itemize}[label=\textcolor{accentblue}{\textbullet}]
     \item \textbf{Low mutual-information for pre-departure features}: we found that the notebooks that use this datasets have huge data leakage so they get high results but the classification task itself without the leaking columns is a hard task even when augmented with weather data.
@@ -1011,11 +1149,25 @@ For the stakeholder, this means the model is \textbf{useful for pre-departure pr
 
 
 To conclude, the current system is already strong enough to support \textbf{prioritization and early warning}, but not strong enough for full automation in an airline.
-
-
+% ════════════════════════════════════════════
 % ════════════════════════════════════════════
 \section{\textcolor{accentblue}{Team Contributions}}
 
-\textit{Placeholder: add team contributions content here.}
+The distribution of work is detailed below:
+
+\begin{tcolorbox}[mainbox, title={Work Distribution}]
+\renewcommand{\arraystretch}{1.5}
+\begin{tabularx}{\textwidth}{l l X}
+    \toprule
+    \textbf{Team Member} & \textbf{Role} & \textbf{Key Responsibilities} \\
+    \midrule
+    \textbf{Akram Hany} & Data Engineer & Data acquisition, merging multiple sources, establishing thorough validation pipelines, Handled preprocessing. \\
+    \textbf{Amir Anwar} & ML Engineer & Engineered complex features, built and trained all 5+ classification models, tracked experiments, and conducted deep model evaluation. \\
+    \textbf{Somia Saad} & Data Analyst & Defined the core business problem, conducted rigorous Exploratory Data Analysis (EDA), interpreted model results for stakeholders, and maintained the overall quality of the report. \\
+    \textbf{Ahmed Hamed} & MLOps & Enforced clean code practices, wrote comprehensive unit and integration tests, set up project automation (Makefiles), configured CI pipelines. \\
+    \bottomrule
+\end{tabularx}
+\end{tcolorbox}
+
 
 \end{document}
