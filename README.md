@@ -1,66 +1,101 @@
 # DS-Flight-Delay-Classification
 
-<a target="_blank" href="https://cookiecutter-data-science.drivendata.org/">
-    <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
-</a>
+## Team
 
-This is a flight delay classification project that tries to answer this, Which airline should you fly on to avoid significant delays?
+Team 5, Cairo University, Faculty of Engineering, Computer Engineering Department
 
-## Project Organization
+- Ahmed Hamed Gaber Hamed
+- Akram Hany Karam Salam
+- Amir Anwar Bekhit Awd Kedis
+- Somia Saad Esmail Elshemy
 
-```
-├── LICENSE            <- Open-source license if one is chosen
-├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
-├── README.md          <- The top-level README for developers using this project.
-├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
-│
-├── docs               <- A default mkdocs project; see www.mkdocs.org for details
-│
-├── models             <- Trained and serialized models, model predictions, or model summaries
-│
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`.
-│
-├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         flight_delay_classification and configuration for tools like ruff
-│
-├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-│
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
-│
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
-│
-├── setup.cfg          <- Configuration file for flake8
-│
-└── flight_delay_classification   <- Source code for use in this project.
-    │
-    ├── __init__.py             <- Makes flight_delay_classification a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    └── plots.py                <- Code to create visualizations
+## Project description
+
+This project predicts how severe a flight departure delay will be before pushback. We use 2015 U.S. domestic flight records, add weather data, and classify each flight into one of four outcomes:
+
+- On Time
+- Minor Delay
+- Major Delay
+- Cancelled
+
+The point is simple: give airline and airport teams something useful early enough to react.
+
+## Setup
+
+### Prerequisites
+
+- Python 3.11+
+- Poetry
+
+### Install dependencies
+
+```bash
+poetry install
 ```
 
---------
+### Prepare the data
 
-## How to run the project
+Download the flight delays dataset from Kaggle:
 
-Currently, you can run the project by simply downloading the flights data from this [link](https://www.kaggle.com/datasets/usdot/flight-delays).  
-Then add the `flights.csv` to `data/raw`, and add the rest of the `.csv` files to the `data/external`.  
-Finally, run the `run.sh` script.
+https://www.kaggle.com/datasets/usdot/flight-delays
+
+Then place the files like this:
+
+- `data/raw/flights.csv`
+- supporting CSV files such as `airlines.csv` and `airports.csv` in `data/external/`
+
+If you need a local environment file, copy it from the template:
+
+```bash
+cp .env.example .env
+```
+
+## Run instructions
+
+### Option 1. Run the phase 1 pipeline step by step
+
+These commands sample flights, fetch weather data, validate the result, and build the processed dataset used for modeling.
+
+```bash
+poetry run python -m flight_delay_classification.acquisition.sample
+poetry run python -m flight_delay_classification.acquisition.weather
+poetry run python -m flight_delay_classification.validation.validate
+poetry run python -m flight_delay_classification.preprocessing.preprocess
+```
+
+### Option 2. Use the helper script
+
+On Linux, you can run the same setup and preprocessing flow with:
+
+```bash
+bash run.sh
+```
+
+### Option 3. Train and compare models
+
+To run the final model selection sweep:
+
+```bash
+poetry run python -m flight_delay_classification.modeling.run_all_models --experiment-name "flight-delay-final-model-selection" --run-prefix "final" --primary-metric balanced_accuracy
+```
+
+If you want the full list of single-model training and tuning commands, see [run_guide.md](run_guide.md).
+
+### Optional: start the MLflow UI
+
+```bash
+poetry run mlflow ui --backend-store-uri "sqlite:///./mlflow.db" --default-artifact-root "file:///./mlartifacts"
+```
+
+## Project layout
+
+```text
+data/                          Raw, external, interim, and processed datasets
+docs/                          Proposal and planning documents
+flight_delay_classification/   Source code for acquisition, validation, preprocessing, and modeling
+mlartifacts/                   MLflow artifact store
+models/                        Saved trained models
+notebooks/                     Analysis and validation notebooks
+reports/                       Evaluation outputs and report assets
+tests/                         Automated tests
+```
