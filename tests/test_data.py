@@ -13,10 +13,11 @@ import pandas as pd
 import pytest
 
 from flight_delay_classification.features import (
+    add_smoothed_historical_rate_features,
     build_feature_matrices,
     prepare_feature_artifacts,
+    select_informative_features,
 )
-
 
 EXPECTED_HISTORICAL_COLUMNS = [
     "airline_historical_delay_rate",
@@ -59,15 +60,61 @@ EXPECTED_TEMPORAL_COLUMNS = [
 ]
 
 EXPECTED_OPERATIONAL_INTERACTION_COLUMNS = [
+    "departure_hour_bucket_code",
     "origin_hourly_departure_count",
     "destination_hourly_arrival_count",
+    "origin_departure_bank_count",
+    "destination_departure_bank_count",
     "origin_congestion_ratio",
     "destination_congestion_ratio",
+    "origin_departure_bank_ratio",
+    "destination_departure_bank_ratio",
     "origin_weather_intensity",
     "destination_weather_intensity",
     "origin_congestion_weather_score",
     "destination_congestion_weather_score",
     "route_congestion_weather_score",
+    "origin_departure_bank_weather_score",
+    "destination_departure_bank_weather_score",
+]
+
+EXPECTED_INTERACTION_HISTORICAL_COLUMNS = [
+    "airline_departure_bank_historical_delay_rate",
+    "airline_departure_bank_historical_on_time_rate",
+    "airline_departure_bank_historical_minor_delay_rate",
+    "airline_departure_bank_historical_severe_rate",
+    "airline_departure_bank_historical_major_delay_rate",
+    "airline_departure_bank_historical_cancelled_rate",
+    "origin_departure_bank_historical_delay_rate",
+    "origin_departure_bank_historical_on_time_rate",
+    "origin_departure_bank_historical_minor_delay_rate",
+    "origin_departure_bank_historical_severe_rate",
+    "origin_departure_bank_historical_major_delay_rate",
+    "origin_departure_bank_historical_cancelled_rate",
+    "origin_day_of_week_historical_delay_rate",
+    "origin_day_of_week_historical_on_time_rate",
+    "origin_day_of_week_historical_minor_delay_rate",
+    "origin_day_of_week_historical_severe_rate",
+    "origin_day_of_week_historical_major_delay_rate",
+    "origin_day_of_week_historical_cancelled_rate",
+    "airline_route_historical_delay_rate",
+    "airline_route_historical_on_time_rate",
+    "airline_route_historical_minor_delay_rate",
+    "airline_route_historical_severe_rate",
+    "airline_route_historical_major_delay_rate",
+    "airline_route_historical_cancelled_rate",
+    "route_departure_bank_historical_delay_rate",
+    "route_departure_bank_historical_on_time_rate",
+    "route_departure_bank_historical_minor_delay_rate",
+    "route_departure_bank_historical_severe_rate",
+    "route_departure_bank_historical_major_delay_rate",
+    "route_departure_bank_historical_cancelled_rate",
+    "route_day_of_week_historical_delay_rate",
+    "route_day_of_week_historical_on_time_rate",
+    "route_day_of_week_historical_minor_delay_rate",
+    "route_day_of_week_historical_severe_rate",
+    "route_day_of_week_historical_major_delay_rate",
+    "route_day_of_week_historical_cancelled_rate",
 ]
 
 
@@ -150,9 +197,13 @@ def test_build_feature_matrices_aligns_test_columns() -> None:
     for column in EXPECTED_HISTORICAL_COLUMNS:
         assert column in train_features.columns
         assert column in test_features.columns
+    for column in EXPECTED_INTERACTION_HISTORICAL_COLUMNS:
+        assert column in train_features.columns
+        assert column in test_features.columns
     assert test_features[EXPECTED_TEMPORAL_COLUMNS].notna().all().all()
     assert test_features[EXPECTED_OPERATIONAL_INTERACTION_COLUMNS].notna().all().all()
     assert test_features[EXPECTED_HISTORICAL_COLUMNS].notna().all().all()
+    assert test_features[EXPECTED_INTERACTION_HISTORICAL_COLUMNS].notna().all().all()
     assert train_features.loc[0, "is_holiday"] == 1
     assert train_features.loc[1, "is_weekend"] == 1
     assert train_features.loc[1, "is_evening_peak_bank"] == 1
@@ -177,6 +228,11 @@ def test_build_feature_matrices_aligns_test_columns() -> None:
     assert test_features.loc[0, "airline_historical_on_time_rate"] == 0.5
     assert test_features.loc[0, "airline_historical_minor_delay_rate"] == 0.5
     assert test_features.loc[0, "airline_historical_major_delay_rate"] == 0.0
+    assert test_features.loc[0, "airline_route_historical_on_time_rate"] == 0.5
+    assert (
+        test_features.loc[0, "route_departure_bank_historical_minor_delay_rate"] == 0.5
+    )
+    assert test_features.loc[0, "route_day_of_week_historical_major_delay_rate"] == 0.0
     assert test_features.loc[0, "route_historical_cancelled_rate"] == 0.0
     assert train_labels.columns.tolist() == ["DELAY_CATEGORY"]
     assert test_labels.columns.tolist() == ["DELAY_CATEGORY"]
@@ -266,7 +322,83 @@ def test_prepare_feature_artifacts_writes_expected_files(tmp_path: Path) -> None
     for column in EXPECTED_HISTORICAL_COLUMNS:
         assert column in written_train_features.columns
         assert column in written_test_features.columns
+    for column in EXPECTED_INTERACTION_HISTORICAL_COLUMNS:
+        assert column in written_train_features.columns
+        assert column in written_test_features.columns
     assert written_train_labels.columns.tolist() == ["DELAY_CATEGORY"]
     assert written_test_labels.columns.tolist() == ["DELAY_CATEGORY"]
     assert summary["train_rows"] == len(written_train_features)
     assert summary["test_rows"] == len(written_test_features)
+
+
+def test_select_informative_features_keeps_only_signal_columns() -> None:
+    train_features = pd.DataFrame(
+        {
+            "signal_feature": [0, 0, 0, 0, 1, 1, 1, 1],
+            "weak_noise": [0, 1, 0, 1, 0, 1, 0, 1],
+            "constant_feature": [1] * 8,
+        }
+    )
+    test_features = pd.DataFrame(
+        {
+            "signal_feature": [0, 1],
+            "weak_noise": [1, 0],
+            "constant_feature": [1, 1],
+        }
+    )
+    y_train = pd.Series(
+        [
+            "on_time",
+            "on_time",
+            "on_time",
+            "on_time",
+            "major_delay",
+            "major_delay",
+            "major_delay",
+            "major_delay",
+        ]
+    )
+
+    selected_train, selected_test, selected_columns = select_informative_features(
+        train_features=train_features,
+        test_features=test_features,
+        y_train=y_train,
+        method="mutual_info",
+        min_mutual_info=0.2,
+    )
+
+    assert selected_columns == ["signal_feature"]
+    assert selected_train.columns.tolist() == ["signal_feature"]
+    assert selected_test.columns.tolist() == ["signal_feature"]
+
+
+def test_smoothed_historical_rate_features_use_leave_one_out_on_train() -> None:
+    train_features = pd.DataFrame({"AIRLINE": ["AA", "AA", "UA"]})
+    test_features = pd.DataFrame({"AIRLINE": ["AA", "UA", "DL"]})
+    y_train = pd.Series(["on_time", "major_delay", "minor_delay"])
+
+    encoded_train, encoded_test = add_smoothed_historical_rate_features(
+        train_features=train_features,
+        test_features=test_features,
+        y_train=y_train,
+        encoding_columns={"AIRLINE": "airline"},
+    )
+
+    assert encoded_train.loc[0, "airline_historical_on_time_rate"] == pytest.approx(
+        25 / 78
+    )
+    assert encoded_train.loc[1, "airline_historical_on_time_rate"] == pytest.approx(
+        28 / 78
+    )
+    assert encoded_train.loc[2, "airline_historical_on_time_rate"] == pytest.approx(
+        1 / 3
+    )
+    assert encoded_test.loc[0, "airline_historical_on_time_rate"] == pytest.approx(
+        28 / 81
+    )
+    assert encoded_test.loc[1, "airline_historical_on_time_rate"] == pytest.approx(
+        25 / 78
+    )
+    assert encoded_test.loc[2, "airline_historical_on_time_rate"] == pytest.approx(
+        1 / 3
+    )

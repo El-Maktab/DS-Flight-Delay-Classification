@@ -7,10 +7,13 @@ Description:
 
 """
 
+import json
+
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from sklearn.dummy import DummyClassifier
 
 from flight_delay_classification.modeling.registry import (
     MODEL_MODES,
@@ -20,6 +23,12 @@ from flight_delay_classification.modeling.registry import (
 from flight_delay_classification.modeling.run_all_models import (
     build_run_name,
     run_all_models,
+)
+from flight_delay_classification.modeling.tune import (
+    build_hist_gradient_boosting_search_space,
+    compute_average_misclassification_cost,
+    resolve_search_scoring,
+    score_parameter_candidates_with_honest_cv,
 )
 from flight_delay_classification.modeling.train import (
     build_evaluation_outputs,
@@ -121,9 +130,100 @@ def test_train_and_log_model_saves_model_and_mlfow_run(tmp_path: Path) -> None:
     assert model_path.exists()
     assert summary["run_id"]
     assert summary["tracking_uri"] == tracking_uri
+    assert (
+        summary["train_metrics"]["balanced_accuracy"]
+        >= summary["metrics"]["balanced_accuracy"]
+    )
+    assert (
+        summary["train_cost_metrics"]["average_misclassification_cost"]
+        <= summary["cost_metrics"]["average_misclassification_cost"]
+    )
     assert summary["metrics"]["macro_f1"] >= 0.0
     assert tracking_db_path.exists()
     assert (tmp_path / "mlartifacts").exists()
+
+
+def test_train_and_log_model_supports_mutual_info_feature_selection(
+    tmp_path: Path,
+) -> None:
+    train_features = pd.DataFrame(
+        {
+            "signal_feature": [0.0, 0.1, 0.0, 0.1, 5.0, 5.1, 10.0, 10.1],
+            "weak_noise": [0, 1, 0, 1, 0, 1, 0, 1],
+            "constant_feature": [1.0] * 8,
+        }
+    )
+    train_labels = pd.DataFrame(
+        {
+            "DELAY_CATEGORY": [
+                "on_time",
+                "on_time",
+                "minor_delay",
+                "minor_delay",
+                "major_delay",
+                "major_delay",
+                "cancelled",
+                "cancelled",
+            ]
+        }
+    )
+    test_features = pd.DataFrame(
+        {
+            "signal_feature": [0.05, 0.05, 5.05, 10.05],
+            "weak_noise": [1, 0, 1, 0],
+            "constant_feature": [1.0] * 4,
+        }
+    )
+    test_labels = pd.DataFrame(
+        {
+            "DELAY_CATEGORY": [
+                "on_time",
+                "minor_delay",
+                "major_delay",
+                "cancelled",
+            ]
+        }
+    )
+    features_path = tmp_path / "features.csv"
+    labels_path = tmp_path / "labels.csv"
+    test_features_path = tmp_path / "test_features.csv"
+    test_labels_path = tmp_path / "test_labels.csv"
+    train_features.to_csv(features_path, index=False)
+    train_labels.to_csv(labels_path, index=False)
+    test_features.to_csv(test_features_path, index=False)
+    test_labels.to_csv(test_labels_path, index=False)
+
+    tracking_db_path = tmp_path / "mlflow.db"
+    tracking_uri = f"sqlite:///{tracking_db_path.resolve().as_posix()}"
+    model_path = tmp_path / "models" / "selected-model.pkl"
+    report_path = tmp_path / "reports" / "evaluation.json"
+    predictions_path = tmp_path / "predictions.csv"
+
+    summary = train_and_log_model(
+        features_path=features_path,
+        labels_path=labels_path,
+        test_features_path=test_features_path,
+        test_labels_path=test_labels_path,
+        model_path=model_path,
+        evaluation_report_path=report_path,
+        predictions_path=predictions_path,
+        experiment_name="pytest-flight-delay-baseline-selected",
+        run_name="baseline-selected-test-run",
+        tracking_uri=tracking_uri,
+        feature_selection_method="mutual_info",
+        min_mutual_info=0.2,
+        max_iter=500,
+        random_state=42,
+    )
+
+    assert model_path.exists()
+    assert report_path.exists()
+    assert predictions_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "train_core_metrics" in report
+    assert "train_cost_metrics" in report
+    assert summary["train_metrics"]["balanced_accuracy"] >= 0.0
+    assert summary["metrics"]["balanced_accuracy"] >= 0.0
 
 
 def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
@@ -150,6 +250,83 @@ def test_train_model_for_mode_uses_registry_for_majority_baseline() -> None:
     assert result.model is None
     assert result.algorithm == "majority_baseline"
     assert result.y_pred.tolist() == ["on_time", "on_time"]
+
+
+def test_boosting_search_space_includes_class_weight() -> None:
+    search_space = build_hist_gradient_boosting_search_space()
+
+    assert "class_weight" in search_space
+    assert search_space["class_weight"] == [None, "balanced"]
+
+
+def test_cost_primary_metric_scoring_uses_average_misclassification_cost() -> None:
+    y_true = pd.Series(["on_time", "minor_delay", "major_delay", "cancelled"])
+    y_pred = pd.Series(["on_time", "on_time", "minor_delay", "major_delay"])
+
+    avg_cost = compute_average_misclassification_cost(y_true, y_pred)
+    scoring, best_score_key, score_multiplier = resolve_search_scoring("cost")
+
+    assert avg_cost == pytest.approx((2 + 5 + 8) / 4)
+    assert callable(scoring)
+    assert best_score_key == "best_cv_average_misclassification_cost"
+    assert score_multiplier == -1.0
+
+
+def test_honest_cv_scoring_rebuilds_fold_local_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    train_df = pd.DataFrame(
+        {
+            "DELAY_CATEGORY": [
+                "on_time",
+                "on_time",
+                "minor_delay",
+                "minor_delay",
+                "major_delay",
+                "major_delay",
+                "cancelled",
+                "cancelled",
+            ]
+        }
+    )
+    build_calls = {"count": 0}
+
+    def fake_build_modeling_matrices_from_raw_frames(
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        feature_selection_method: str,
+        min_mutual_info: float,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+        build_calls["count"] += 1
+        train_features = pd.DataFrame({"feature_a": range(len(train_df))})
+        test_features = pd.DataFrame({"feature_a": range(len(test_df))})
+        return (
+            train_features,
+            train_df["DELAY_CATEGORY"].reset_index(drop=True),
+            test_features,
+            test_df["DELAY_CATEGORY"].reset_index(drop=True),
+        )
+
+    monkeypatch.setattr(
+        "flight_delay_classification.modeling.tune.build_modeling_matrices_from_raw_frames",
+        fake_build_modeling_matrices_from_raw_frames,
+    )
+
+    scored_trials, cv_folds = score_parameter_candidates_with_honest_cv(
+        estimator=DummyClassifier(strategy="most_frequent"),
+        parameter_candidates=[{}],
+        train_df=train_df,
+        primary_metric="balanced_accuracy",
+        use_smote=False,
+        feature_selection_method="none",
+        min_mutual_info=0.0,
+        random_state=42,
+    )
+
+    assert cv_folds == 2
+    assert build_calls["count"] == cv_folds
+    assert len(scored_trials) == 1
+    assert scored_trials[0]["mean_score"] >= 0.0
 
 
 @pytest.mark.parametrize(

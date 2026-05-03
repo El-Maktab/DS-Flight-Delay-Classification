@@ -39,7 +39,16 @@ from flight_delay_classification.config import (
     REPORTS_DIR,
 )
 from flight_delay_classification.evaluation.evaluate import evaluate_predictions
-from flight_delay_classification.features import apply_smote
+from flight_delay_classification.evaluation.evaluate import (
+    compute_core_metrics,
+    compute_cost_metrics,
+)
+from flight_delay_classification.features import (
+    DEFAULT_FEATURE_SELECTION_METHOD,
+    DEFAULT_MIN_MUTUAL_INFO,
+    apply_smote,
+    select_informative_features,
+)
 from flight_delay_classification.modeling.registry import (
     ModelTrainingRequest,
     train_model_for_mode,
@@ -177,6 +186,8 @@ def train_and_log_model(
     hgb_min_samples_leaf: int = 20,
     hgb_l2_regularization: float = 0.0,
     hgb_max_depth: int | None = None,
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
     random_state: int = RANDOM_STATE,
     X_train: pd.DataFrame | None = None,
     y_train: pd.Series | None = None,
@@ -197,6 +208,14 @@ def train_and_log_model(
 
     if use_smote and not using_preloaded_data:
         X_train, y_train = apply_smote(X_train, y_train, random_state)
+
+    X_train, X_test, selected_columns = select_informative_features(
+        train_features=X_train,
+        test_features=X_test,
+        y_train=y_train,
+        method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+    )
 
     training_result = train_model_for_mode(
         model_mode,
@@ -219,7 +238,10 @@ def train_and_log_model(
     )
     model = training_result.model
     class_weight = training_result.class_weight
+    train_predictions = pd.Series(model.predict(X_train), name=TARGET_COLUMN)
     y_pred = training_result.y_pred
+    train_metrics = compute_core_metrics(y_train, train_predictions)
+    train_cost_metrics = compute_cost_metrics(y_train, train_predictions)
     cv_scores = evaluate_cv_scores(model, X_train, y_train) if model is not None else {}
 
     evaluation_report = evaluate_predictions(
@@ -227,6 +249,8 @@ def train_and_log_model(
         y_pred=y_pred,
         predictions_path=predictions_path,
     )
+    evaluation_report["train_core_metrics"] = train_metrics
+    evaluation_report["train_cost_metrics"] = train_cost_metrics
     metrics = evaluation_report["core_metrics"]
     cost_metrics = evaluation_report["cost_metrics"]
 
@@ -269,9 +293,16 @@ def train_and_log_model(
                 "hgb_min_samples_leaf": hgb_min_samples_leaf,
                 "hgb_l2_regularization": hgb_l2_regularization,
                 "hgb_max_depth": hgb_max_depth,
+                "feature_selection_method": feature_selection_method,
+                "min_mutual_info": min_mutual_info,
                 "train_rows": len(X_train),
                 "feature_columns": len(X_train.columns),
+                "selected_feature_columns": len(selected_columns),
             }
+        )
+        mlflow.log_metrics({f"train_{key}": value for key, value in train_metrics.items()})
+        mlflow.log_metrics(
+            {f"train_{key}": value for key, value in train_cost_metrics.items()}
         )
         mlflow.log_metrics(metrics)
         mlflow.log_metrics(cost_metrics)
@@ -294,7 +325,10 @@ def train_and_log_model(
         "model_path": resolved_model_path,
         "run_id": run.info.run_id,
         "tracking_uri": resolved_uri,
+        "train_metrics": train_metrics,
+        "train_cost_metrics": train_cost_metrics,
         "metrics": metrics,
+        "cost_metrics": cost_metrics,
         "class_order": CLASS_ORDER,
     }
 
@@ -325,6 +359,8 @@ def main(
     hgb_min_samples_leaf: int = 20,
     hgb_l2_regularization: float = 0.0,
     hgb_max_depth: int | None = None,
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
     random_state: int = RANDOM_STATE,
 ) -> None:
     summary = train_and_log_model(
@@ -350,6 +386,8 @@ def main(
         hgb_min_samples_leaf=hgb_min_samples_leaf,
         hgb_l2_regularization=hgb_l2_regularization,
         hgb_max_depth=hgb_max_depth,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
         random_state=random_state,
     )
 

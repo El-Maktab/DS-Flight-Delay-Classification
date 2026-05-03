@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import pickle
 from pathlib import Path
+from statistics import mean, pstdev
 from typing import Any
 
 import mlflow
@@ -18,8 +19,9 @@ import mlflow.sklearn
 import pandas as pd
 from loguru import logger
 from mlflow.models import infer_signature
-from sklearn.base import BaseEstimator
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.base import BaseEstimator, clone
+from sklearn.metrics import balanced_accuracy_score
+from sklearn.model_selection import ParameterSampler
 import typer
 
 from flight_delay_classification.config import (
@@ -28,7 +30,15 @@ from flight_delay_classification.config import (
     REPORTS_DIR,
 )
 from flight_delay_classification.evaluation.evaluate import evaluate_predictions
-from flight_delay_classification.features import TARGET_COLUMN, apply_smote
+from flight_delay_classification.evaluation.evaluate import compute_cost_metrics
+from flight_delay_classification.features import (
+    DEFAULT_FEATURE_SELECTION_METHOD,
+    DEFAULT_MIN_MUTUAL_INFO,
+    TARGET_COLUMN,
+    apply_smote,
+    build_feature_matrices,
+    split_dataset,
+)
 from flight_delay_classification.modeling.registry import (
     build_hist_gradient_boosting_estimator,
     build_hierarchical_hist_gradient_boosting_estimator,
@@ -38,17 +48,18 @@ from flight_delay_classification.modeling.train import (
     RANDOM_STATE,
     build_cv_splitter,
     configure_mlflow,
-    load_modeling_artifacts,
 )
 
 app = typer.Typer()
 
 DEFAULT_EXPERIMENT_NAME = "flight-delay-hyperparameter-tuning"
+DEFAULT_TUNING_TEST_SIZE = 0.2
 SUPPORTED_TUNING_MODES = (
     "hist_gradient_boosting",
     "random_forest",
     "hierarchical_hist_gradient_boosting",
 )
+SUPPORTED_PRIMARY_METRICS = ("balanced_accuracy", "cost")
 DEFAULT_TUNING_OUTPUTS: dict[str, dict[str, Path | str]] = {
     "hist_gradient_boosting": {
         "model_path": MODELS_DIR / "hist_gradient_boosting_tuned.pkl",
@@ -82,6 +93,7 @@ DEFAULT_TUNING_OUTPUTS: dict[str, dict[str, Path | str]] = {
 def build_hist_gradient_boosting_search_space() -> dict[str, list[Any]]:
     # NOTE: keep the search focused on the parameters already called out in the plan.
     return {
+        "class_weight": [None, "balanced"],
         "learning_rate": [0.03, 0.05, 0.08, 0.1, 0.15],
         "max_iter": [300, 600, 1000, 1500, 2000],
         "max_leaf_nodes": [15, 31, 63, 127],
@@ -106,6 +118,40 @@ def build_hierarchical_hist_gradient_boosting_search_space() -> dict[str, list[A
     return build_hist_gradient_boosting_search_space()
 
 
+def compute_average_misclassification_cost(
+    y_true: pd.Series | list[str] | Any,
+    y_pred: pd.Series | list[str] | Any,
+) -> float:
+    return compute_cost_metrics(pd.Series(y_true), pd.Series(y_pred))[
+        "average_misclassification_cost"
+    ]
+
+
+def compute_balanced_accuracy(
+    y_true: pd.Series | list[str] | Any,
+    y_pred: pd.Series | list[str] | Any,
+) -> float:
+    return float(balanced_accuracy_score(pd.Series(y_true), pd.Series(y_pred)))
+
+
+def resolve_search_scoring(
+    primary_metric: str,
+) -> tuple[str | Any, str, float]:
+    if primary_metric == "balanced_accuracy":
+        return compute_balanced_accuracy, "best_cv_balanced_accuracy", 1.0
+
+    if primary_metric == "cost":
+        return (
+            compute_average_misclassification_cost,
+            "best_cv_average_misclassification_cost",
+            -1.0,
+        )
+
+    raise typer.BadParameter(
+        f"Unsupported primary_metric '{primary_metric}'. Use one of: {SUPPORTED_PRIMARY_METRICS}"
+    )
+
+
 def resolve_tuning_defaults(
     model_mode: str,
     model_path: Path | None,
@@ -127,52 +173,169 @@ def resolve_tuning_defaults(
     )
 
 
-def load_tuning_artifacts(
-    features_path: Path,
-    labels_path: Path,
-    test_features_path: Path,
-    test_labels_path: Path,
-    use_smote: bool,
+def load_honest_tuning_frames(
+    input_path: Path,
+    test_size: float,
     random_state: int,
-    X_train: pd.DataFrame | None,
-    y_train: pd.Series | None,
-    X_test: pd.DataFrame | None,
-    y_test: pd.Series | None,
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    using_preloaded_data = not (
-        X_train is None or y_train is None or X_test is None or y_test is None
-    )
-
-    if not using_preloaded_data:
-        X_train, y_train, X_test, y_test = load_modeling_artifacts(
-            features_path=features_path,
-            labels_path=labels_path,
-            test_features_path=test_features_path,
-            test_labels_path=test_labels_path,
+    train_df: pd.DataFrame | None = None,
+    test_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if train_df is not None and test_df is not None:
+        return (
+            train_df.reset_index(drop=True).copy(),
+            test_df.reset_index(drop=True).copy(),
         )
 
-    if use_smote and not using_preloaded_data:
-        X_train, y_train = apply_smote(X_train, y_train, random_state)
+    df = pd.read_csv(input_path, low_memory=False)
+    logger.info("Loaded cleaned dataset from {} with shape {}", input_path, df.shape)
+    return split_dataset(
+        df=df,
+        target_column=TARGET_COLUMN,
+        test_size=test_size,
+        random_state=random_state,
+    )
 
-    return X_train, y_train, X_test, y_test
+
+def build_modeling_matrices_from_raw_frames(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_selection_method: str,
+    min_mutual_info: float,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    X_train, y_train_df, X_test, y_test_df = build_feature_matrices(
+        train_df=train_df,
+        test_df=test_df,
+        target_column=TARGET_COLUMN,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+    )
+    return (
+        X_train,
+        y_train_df[TARGET_COLUMN],
+        X_test,
+        y_test_df[TARGET_COLUMN],
+    )
+
+
+def evaluate_parameter_candidate_with_honest_cv(
+    *,
+    estimator: BaseEstimator,
+    params: dict[str, Any],
+    train_df: pd.DataFrame,
+    use_smote: bool,
+    feature_selection_method: str,
+    min_mutual_info: float,
+    scoring: Any,
+    score_multiplier: float,
+    random_state: int,
+) -> dict[str, Any]:
+    cv_splitter = build_cv_splitter(train_df[TARGET_COLUMN], train_df)
+    fold_scores: list[float] = []
+
+    for fold_index, (fold_train_indices, fold_valid_indices) in enumerate(
+        cv_splitter.split(train_df, train_df[TARGET_COLUMN]),
+        start=1,
+    ):
+        fold_train_df = train_df.iloc[fold_train_indices].reset_index(drop=True)
+        fold_valid_df = train_df.iloc[fold_valid_indices].reset_index(drop=True)
+        X_fold_train, y_fold_train, X_fold_valid, y_fold_valid = (
+            build_modeling_matrices_from_raw_frames(
+                train_df=fold_train_df,
+                test_df=fold_valid_df,
+                feature_selection_method=feature_selection_method,
+                min_mutual_info=min_mutual_info,
+            )
+        )
+
+        if use_smote:
+            X_fold_train, y_fold_train = apply_smote(
+                X_fold_train,
+                y_fold_train,
+                random_state,
+            )
+
+        candidate = clone(estimator)
+        candidate.set_params(**params)
+        candidate.fit(X_fold_train, y_fold_train)
+        fold_predictions = pd.Series(
+            candidate.predict(X_fold_valid), name=TARGET_COLUMN
+        )
+        fold_score = float(scoring(y_fold_valid, fold_predictions))
+        logger.debug(
+            "Scored params {} on fold {} with {}={:.6f}",
+            params,
+            fold_index,
+            scoring.__name__,
+            fold_score,
+        )
+        fold_scores.append(fold_score)
+
+    return {
+        "params": params,
+        "mean_score": float(mean(fold_scores)),
+        "std_score": float(pstdev(fold_scores)),
+        "selection_score": float(mean(fold_scores) * score_multiplier),
+    }
+
+
+def score_parameter_candidates_with_honest_cv(
+    *,
+    estimator: BaseEstimator,
+    parameter_candidates: list[dict[str, Any]],
+    train_df: pd.DataFrame,
+    primary_metric: str,
+    use_smote: bool,
+    feature_selection_method: str,
+    min_mutual_info: float,
+    random_state: int,
+) -> tuple[list[dict[str, Any]], int]:
+    scoring, _, score_multiplier = resolve_search_scoring(primary_metric)
+    cv_splitter = build_cv_splitter(train_df[TARGET_COLUMN], train_df)
+    scored_trials = [
+        evaluate_parameter_candidate_with_honest_cv(
+            estimator=estimator,
+            params=params,
+            train_df=train_df,
+            use_smote=use_smote,
+            feature_selection_method=feature_selection_method,
+            min_mutual_info=min_mutual_info,
+            scoring=scoring,
+            score_multiplier=score_multiplier,
+            random_state=random_state,
+        )
+        for params in parameter_candidates
+    ]
+    return scored_trials, cv_splitter.get_n_splits(train_df, train_df[TARGET_COLUMN])
 
 
 def build_top_trials(
-    search: RandomizedSearchCV, limit: int = 5
+    scored_trials: list[dict[str, Any]],
+    primary_metric: str,
+    limit: int = 5,
 ) -> list[dict[str, Any]]:
-    results = pd.DataFrame(search.cv_results_)
-    ranked = results.sort_values("rank_test_score").head(limit)
+    ranked = sorted(
+        scored_trials,
+        key=lambda trial: trial["selection_score"],
+        reverse=True,
+    )[:limit]
+    score_label = (
+        "mean_cv_average_misclassification_cost"
+        if primary_metric == "cost"
+        else "mean_cv_balanced_accuracy"
+    )
+    std_label = (
+        "std_cv_average_misclassification_cost"
+        if primary_metric == "cost"
+        else "std_cv_balanced_accuracy"
+    )
     trials: list[dict[str, Any]] = []
-    for _, row in ranked.iterrows():
+    for rank, trial in enumerate(ranked, start=1):
         trials.append(
             {
-                "rank": int(row["rank_test_score"]),
-                "mean_test_score": float(row["mean_test_score"]),
-                "std_test_score": float(row["std_test_score"]),
-                "params": {
-                    key: value.item() if hasattr(value, "item") else value
-                    for key, value in row["params"].items()
-                },
+                "rank": rank,
+                score_label: float(trial["mean_score"]),
+                std_label: float(trial["std_score"]),
+                "params": trial["params"],
             }
         )
     return trials
@@ -185,6 +348,8 @@ def tune_and_log_search(
     algorithm: str,
     estimator: BaseEstimator,
     param_distributions: dict[str, list[Any]],
+    input_path: Path,
+    test_size: float,
     features_path: Path,
     labels_path: Path,
     test_features_path: Path,
@@ -198,68 +363,108 @@ def tune_and_log_search(
     use_smote: bool,
     n_iter: int,
     search_verbose: int,
+    primary_metric: str,
+    feature_selection_method: str,
+    min_mutual_info: float,
     random_state: int,
+    train_df: pd.DataFrame | None,
+    test_df: pd.DataFrame | None,
     X_train: pd.DataFrame | None,
     y_train: pd.Series | None,
     X_test: pd.DataFrame | None,
     y_test: pd.Series | None,
 ) -> dict[str, Any]:
-    X_train, y_train, X_test, y_test = load_tuning_artifacts(
-        features_path=features_path,
-        labels_path=labels_path,
-        test_features_path=test_features_path,
-        test_labels_path=test_labels_path,
-        use_smote=use_smote,
+    _ = (
+        features_path,
+        labels_path,
+        test_features_path,
+        test_labels_path,
+        search_verbose,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+    )
+    raw_train_df, raw_test_df = load_honest_tuning_frames(
+        input_path=input_path,
+        test_size=test_size,
         random_state=random_state,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
+        train_df=train_df,
+        test_df=test_df,
     )
 
-    cv_splitter = build_cv_splitter(y_train, X_train)
-    total_fits = n_iter * cv_splitter.get_n_splits(X_train, y_train)
+    _, best_score_key, _ = resolve_search_scoring(primary_metric)
+    parameter_candidates = list(
+        ParameterSampler(
+            param_distributions=param_distributions,
+            n_iter=n_iter,
+            random_state=random_state,
+        )
+    )
+    scored_trials, cv_folds = score_parameter_candidates_with_honest_cv(
+        estimator=estimator,
+        parameter_candidates=parameter_candidates,
+        train_df=raw_train_df,
+        primary_metric=primary_metric,
+        use_smote=use_smote,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+        random_state=random_state,
+    )
+    total_fits = len(parameter_candidates) * cv_folds
     logger.info(
-        "Starting {} randomized search with {} candidates across {} CV fits",
+        "Starting honest {} parameter search with {} candidates across {} fold-local CV fits",
         model_mode,
-        n_iter,
+        len(parameter_candidates),
         total_fits,
     )
-    search = RandomizedSearchCV(
-        estimator=estimator,
-        param_distributions=param_distributions,
-        n_iter=n_iter,
-        scoring="balanced_accuracy",
-        cv=cv_splitter,
-        random_state=random_state,
-        n_jobs=-1,
-        refit=True,
-        verbose=search_verbose,
-    )
-    search.fit(X_train, y_train)
 
-    best_model = search.best_estimator_
+    best_trial = max(
+        scored_trials,
+        key=lambda trial: trial["selection_score"],
+    )
+    best_cv_score = float(best_trial["mean_score"])
+    best_params = best_trial["params"]
+
+    X_train, y_train, X_test, y_test = build_modeling_matrices_from_raw_frames(
+        train_df=raw_train_df,
+        test_df=raw_test_df,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
+    )
+    if use_smote:
+        X_train, y_train = apply_smote(X_train, y_train, random_state)
+
+    best_model = clone(estimator)
+    best_model.set_params(**best_params)
+    best_model.fit(X_train, y_train)
     y_pred = pd.Series(best_model.predict(X_test), name=TARGET_COLUMN)
     evaluation_report = evaluate_predictions(
         y_true=y_test,
         y_pred=y_pred,
         predictions_path=predictions_path,
     )
-    top_trials = build_top_trials(search)
+    top_trials = build_top_trials(scored_trials, primary_metric=primary_metric)
     tuning_report = {
-        "search_strategy": "randomized_search",
-        "primary_metric": "balanced_accuracy",
+        "search_strategy": "parameter_sampler",
+        "tuning_strategy": "honest_fold_rebuild",
+        "primary_metric": primary_metric,
         "model_mode": model_mode,
         "algorithm": algorithm,
-        "best_params": search.best_params_,
-        "best_cv_balanced_accuracy": float(search.best_score_),
+        "best_params": best_params,
+        "best_cv_score": best_cv_score,
+        "feature_selection_method": feature_selection_method,
+        "selected_feature_columns": len(X_train.columns),
+        "cv_folds": cv_folds,
         "top_trials": top_trials,
         "holdout_report": evaluation_report,
     }
+    tuning_report[best_score_key] = best_cv_score
     logger.info(
-        "{} randomized search finished. Best CV balanced accuracy: {:.4f}",
+        "{} randomized search finished. Best CV {}: {:.4f}",
         model_mode,
-        float(search.best_score_),
+        primary_metric,
+        best_cv_score,
     )
 
     tuning_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,18 +490,25 @@ def tune_and_log_search(
             {
                 "model_mode": model_mode,
                 "algorithm": algorithm,
-                "search_strategy": "randomized_search",
-                "primary_metric": "balanced_accuracy",
+                "search_strategy": "parameter_sampler",
+                "tuning_strategy": "honest_fold_rebuild",
+                "primary_metric": primary_metric,
                 "use_smote": use_smote,
                 "n_iter": n_iter,
-                "train_rows": len(X_train),
+                "feature_selection_method": feature_selection_method,
+                "min_mutual_info": min_mutual_info,
+                "train_rows": len(raw_train_df),
+                "holdout_rows": len(raw_test_df),
                 "feature_columns": len(X_train.columns),
-                **{f"best_{key}": value for key, value in search.best_params_.items()},
+                "selected_feature_columns": len(X_train.columns),
+                "cv_folds": cv_folds,
+                **{f"best_{key}": value for key, value in best_params.items()},
             }
         )
         mlflow.log_metrics(evaluation_report["core_metrics"])
         mlflow.log_metrics(evaluation_report["cost_metrics"])
-        mlflow.log_metric("best_cv_balanced_accuracy", float(search.best_score_))
+        mlflow.log_metric("best_cv_score", best_cv_score)
+        mlflow.log_metric(best_score_key, best_cv_score)
         mlflow.sklearn.log_model(
             sk_model=best_model,
             name="model",
@@ -308,20 +520,22 @@ def tune_and_log_search(
 
     logger.info("Saved tuned {} model to {}", model_mode, model_path)
     logger.info("MLflow run {}", run.info.run_id)
-    logger.info("Best params: {}", search.best_params_)
+    logger.info("Best params: {}", best_params)
     logger.info("Holdout metrics: {}", evaluation_report["core_metrics"])
     return {
         "model_mode": model_mode,
         "model_path": str(model_path),
         "run_id": run.info.run_id,
         "tracking_uri": resolved_uri,
-        "best_params": search.best_params_,
-        "best_cv_balanced_accuracy": float(search.best_score_),
+        "best_params": best_params,
+        "best_cv_score": best_cv_score,
         "metrics": evaluation_report["core_metrics"],
+        "cost_metrics": evaluation_report["cost_metrics"],
     }
 
 
 def tune_and_log_hist_gradient_boosting(
+    input_path: Path,
     features_path: Path,
     labels_path: Path,
     test_features_path: Path,
@@ -338,8 +552,14 @@ def tune_and_log_hist_gradient_boosting(
     use_smote: bool = False,
     n_iter: int = 30,
     search_verbose: int = 2,
+    primary_metric: str = "balanced_accuracy",
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
+    test_size: float = DEFAULT_TUNING_TEST_SIZE,
     random_state: int = RANDOM_STATE,
     param_distributions: dict[str, list[Any]] | None = None,
+    train_df: pd.DataFrame | None = None,
+    test_df: pd.DataFrame | None = None,
     X_train: pd.DataFrame | None = None,
     y_train: pd.Series | None = None,
     X_test: pd.DataFrame | None = None,
@@ -361,6 +581,8 @@ def tune_and_log_hist_gradient_boosting(
         ),
         param_distributions=param_distributions
         or build_hist_gradient_boosting_search_space(),
+        input_path=input_path,
+        test_size=test_size,
         features_path=features_path,
         labels_path=labels_path,
         test_features_path=test_features_path,
@@ -374,7 +596,12 @@ def tune_and_log_hist_gradient_boosting(
         use_smote=use_smote,
         n_iter=n_iter,
         search_verbose=search_verbose,
+        primary_metric=primary_metric,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
         random_state=random_state,
+        train_df=train_df,
+        test_df=test_df,
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
@@ -383,6 +610,7 @@ def tune_and_log_hist_gradient_boosting(
 
 
 def tune_and_log_random_forest(
+    input_path: Path,
     features_path: Path,
     labels_path: Path,
     test_features_path: Path,
@@ -398,9 +626,15 @@ def tune_and_log_random_forest(
     use_smote: bool = False,
     n_iter: int = 30,
     search_verbose: int = 2,
+    primary_metric: str = "balanced_accuracy",
     rf_class_weight: str | None = "balanced_subsample",
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
+    test_size: float = DEFAULT_TUNING_TEST_SIZE,
     random_state: int = RANDOM_STATE,
     param_distributions: dict[str, list[Any]] | None = None,
+    train_df: pd.DataFrame | None = None,
+    test_df: pd.DataFrame | None = None,
     X_train: pd.DataFrame | None = None,
     y_train: pd.Series | None = None,
     X_test: pd.DataFrame | None = None,
@@ -418,6 +652,8 @@ def tune_and_log_random_forest(
             max_depth=25,
         ),
         param_distributions=param_distributions or build_random_forest_search_space(),
+        input_path=input_path,
+        test_size=test_size,
         features_path=features_path,
         labels_path=labels_path,
         test_features_path=test_features_path,
@@ -431,7 +667,12 @@ def tune_and_log_random_forest(
         use_smote=use_smote,
         n_iter=n_iter,
         search_verbose=search_verbose,
+        primary_metric=primary_metric,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
         random_state=random_state,
+        train_df=train_df,
+        test_df=test_df,
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
@@ -440,6 +681,7 @@ def tune_and_log_random_forest(
 
 
 def tune_and_log_hierarchical_hist_gradient_boosting(
+    input_path: Path,
     features_path: Path,
     labels_path: Path,
     test_features_path: Path,
@@ -456,8 +698,14 @@ def tune_and_log_hierarchical_hist_gradient_boosting(
     use_smote: bool = False,
     n_iter: int = 30,
     search_verbose: int = 2,
+    primary_metric: str = "balanced_accuracy",
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
+    test_size: float = DEFAULT_TUNING_TEST_SIZE,
     random_state: int = RANDOM_STATE,
     param_distributions: dict[str, list[Any]] | None = None,
+    train_df: pd.DataFrame | None = None,
+    test_df: pd.DataFrame | None = None,
     X_train: pd.DataFrame | None = None,
     y_train: pd.Series | None = None,
     X_test: pd.DataFrame | None = None,
@@ -479,6 +727,8 @@ def tune_and_log_hierarchical_hist_gradient_boosting(
         ),
         param_distributions=param_distributions
         or build_hierarchical_hist_gradient_boosting_search_space(),
+        input_path=input_path,
+        test_size=test_size,
         features_path=features_path,
         labels_path=labels_path,
         test_features_path=test_features_path,
@@ -492,7 +742,12 @@ def tune_and_log_hierarchical_hist_gradient_boosting(
         use_smote=use_smote,
         n_iter=n_iter,
         search_verbose=search_verbose,
+        primary_metric=primary_metric,
+        feature_selection_method=feature_selection_method,
+        min_mutual_info=min_mutual_info,
         random_state=random_state,
+        train_df=train_df,
+        test_df=test_df,
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
@@ -502,6 +757,7 @@ def tune_and_log_hierarchical_hist_gradient_boosting(
 
 @app.command()
 def main(
+    input_path: Path = PROCESSED_DATA_DIR / "flights_cleaned.csv",
     features_path: Path = PROCESSED_DATA_DIR / "features.csv",
     labels_path: Path = PROCESSED_DATA_DIR / "labels.csv",
     test_features_path: Path = PROCESSED_DATA_DIR / "test_features.csv",
@@ -516,7 +772,11 @@ def main(
     use_smote: bool = False,
     n_iter: int = 30,
     search_verbose: int = 2,
+    primary_metric: str = "balanced_accuracy",
     rf_class_weight: str | None = "balanced_subsample",
+    feature_selection_method: str = DEFAULT_FEATURE_SELECTION_METHOD,
+    min_mutual_info: float = DEFAULT_MIN_MUTUAL_INFO,
+    test_size: float = DEFAULT_TUNING_TEST_SIZE,
     random_state: int = RANDOM_STATE,
 ) -> None:
     (
@@ -534,6 +794,7 @@ def main(
 
     if model_mode == "hist_gradient_boosting":
         summary = tune_and_log_hist_gradient_boosting(
+            input_path=input_path,
             features_path=features_path,
             labels_path=labels_path,
             test_features_path=test_features_path,
@@ -547,10 +808,15 @@ def main(
             use_smote=use_smote,
             n_iter=n_iter,
             search_verbose=search_verbose,
+            primary_metric=primary_metric,
+            feature_selection_method=feature_selection_method,
+            min_mutual_info=min_mutual_info,
+            test_size=test_size,
             random_state=random_state,
         )
     elif model_mode == "random_forest":
         summary = tune_and_log_random_forest(
+            input_path=input_path,
             features_path=features_path,
             labels_path=labels_path,
             test_features_path=test_features_path,
@@ -564,11 +830,16 @@ def main(
             use_smote=use_smote,
             n_iter=n_iter,
             search_verbose=search_verbose,
+            primary_metric=primary_metric,
             rf_class_weight=rf_class_weight,
+            feature_selection_method=feature_selection_method,
+            min_mutual_info=min_mutual_info,
+            test_size=test_size,
             random_state=random_state,
         )
     elif model_mode == "hierarchical_hist_gradient_boosting":
         summary = tune_and_log_hierarchical_hist_gradient_boosting(
+            input_path=input_path,
             features_path=features_path,
             labels_path=labels_path,
             test_features_path=test_features_path,
@@ -582,6 +853,10 @@ def main(
             use_smote=use_smote,
             n_iter=n_iter,
             search_verbose=search_verbose,
+            primary_metric=primary_metric,
+            feature_selection_method=feature_selection_method,
+            min_mutual_info=min_mutual_info,
+            test_size=test_size,
             random_state=random_state,
         )
     else:
